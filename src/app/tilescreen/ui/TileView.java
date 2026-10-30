@@ -433,7 +433,7 @@ public final class TileView extends View {
             entities.append(t.entity);
             idx.append(shown.get(k));
             int bg = Style.pastel(t.background);
-            grounds.append(String.format(Locale.US, "%06x", (bg != 0 ? bg : Style.CARD) & 0xFFFFFF));
+            grounds.append(String.format(Locale.US, "%06x", Style.BG & 0xFFFFFF));
             atlas.append('[').append(x).append(',').append(y).append(',').append(fw).append(',').append(fh).append(',')
                     .append(rad).append(',').append(shade).append(']');
             frames.put(shown.get(k), new Rect(x, y, x + fw, y + fh));
@@ -442,12 +442,15 @@ public final class TileView extends View {
                     .append(',').append(fh).append(':').append(mark(t));
         }
         atlas.append(']');
+        wish.append('|').append(grounds);
         if (frames.isEmpty()) {
             livePicture = null;
             liveFrames = frames;
             return;
         }
-        if (pictures.want("live", wish.toString())) liveFrames = frames;
+        // The page's one picture holds every tile's part; the last one stays while the next comes only where the parts
+        // stand where they stood (a new cover, a camera's next picture), never over another page's tiles.
+        if (pictures.want("live", wish.toString(), frames.equals(liveFrames))) liveFrames = frames;
         final Map<String, String> fields = new LinkedHashMap<String, String>();
         fields.put("tiles", entities.toString());
         fields.put("idx", idx.toString());
@@ -469,8 +472,29 @@ public final class TileView extends View {
         Bitmap b = livePicture;
         Rect f = liveFrames.get(index);
         if (b == null || f == null || f.right > b.getWidth() || f.bottom > b.getHeight()) return false;
+        // The card's own round corners, whatever colour the picture's corners came in.
+        float radius = 2.4f * u;
+        Path round = new Path();
+        round.addRoundRect(new RectF(r), radius, radius, Path.Direction.CW);
+        c.save();
+        c.clipPath(round);
         c.drawBitmap(b, f, r, null);
+        c.restore();
         return true;
+    }
+
+    /** Words on a picture: white with a dark edge, so they read on any part of it without a band over it. */
+    private void outlined(Canvas c, String s, float x, float y) {
+        Paint.Style was = text.getStyle();
+        int colour = text.getColor();
+        text.setStyle(Paint.Style.STROKE);
+        text.setStrokeWidth(Math.max(2, text.getTextSize() * 0.16f));
+        text.setStrokeJoin(Paint.Join.ROUND);
+        text.setColor(0xD0000000);
+        c.drawText(s, x, y, text);
+        text.setStyle(was);
+        text.setColor(colour);
+        c.drawText(s, x, y, text);
     }
 
     private List<Integer> included() {
@@ -738,20 +762,19 @@ public final class TileView extends View {
             if (!"cover".equals(t.display)) {
                 // A camera or a map fills its card; its name stands on it unless the tile says none.
                 if (!"none".equals(Json.str(t.options, "overlay"))) {
-                    fill.setColor(0x99000000);
-                    c.drawRect(r.left, r.bottom - fs * 2.4f, r.right, r.bottom - radius * 0.3f, fill);
                     text.setTypeface(medium);
                     text.setTextSize(fs * 0.9f);
-                    text.setColor(Style.TEXT);
+                    text.setColor(0xFFFFFFFF);
                     text.setTextAlign(Paint.Align.LEFT);
                     String label = t.domain().equals("person") ? t.name + " · " + Style.stateLine(t) : t.name;
-                    c.drawText(fit(label, r.width() - pad * 2), r.left + pad, r.bottom - fs * 0.85f, text);
+                    outlined(c, fit(label, r.width() - pad * 2), r.left + pad, r.bottom - fs * 0.85f);
                 }
                 return;
             }
             // An album cover is the card's dimmed ground; the tile draws over it in white.
+            // White on it in the light look too: the picture is dark whatever the look.
             pastel = 0;
-            fg = Style.TEXT;
+            fg = 0xFFFFFFFF;
             dim = 0xFFD0D4DC;
         }
 
@@ -820,7 +843,17 @@ public final class TileView extends View {
         if ("meter".equals(t.display) && t.domain().equals("sensor")) {
             if (meterTile == null) meterTile = new MeterTile(getContext(), glyphs);
             RectF box = new RectF(r.left + pad, r.top + pad * 0.8f, r.right - pad, r.bottom - pad * 0.8f);
-            meterTile.draw(c, t, box, fs, fg, dim, pastel != 0 ? 0x22000000 : Style.RAISED, accent, dead);
+            int cardColour = pastel != 0 ? pastel : on ? Style.CARD_ON : Style.CARD;
+            meterTile.draw(c, t, box, fs, fg, dim, pastel != 0 ? 0x22000000 : Style.RAISED, accent, dead, glass(), samples(t), cardColour);
+            return;
+        }
+        // A sensor as a Big number (display "watch", ui-scale watchCard) or with its graph under its head ("graph").
+        if ("watch".equals(t.display) && !dead && !e.startsWith("screen.")) {
+            drawWatch(c, t, new RectF(r.left + pad, r.top + pad * 0.8f, r.right - pad, r.bottom - pad * 0.8f), fs, fg, dim, accent, on, pastel);
+            return;
+        }
+        if ("graph".equals(t.display) && t.domain().equals("sensor") && samples(t).size() >= 2) {
+            drawGraphTile(c, t, new RectF(r.left + pad, r.top + pad * 0.8f, r.right - pad, r.bottom - pad * 0.8f), fs, fg, dim, accent, on, pastel, dead);
             return;
         }
         if (e.equals("screen.nightstand")) {
@@ -980,6 +1013,143 @@ public final class TileView extends View {
         return days == 1 ? "Yesterday" : days + " days ago";
     }
 
+    /** The value and its unit apart, as a Big number shows them: Home Assistant's own words for a duration carry theirs. */
+    private static String[] valueAndUnit(Tessera.Tile t) {
+        String words = Json.str(t.extra, "sw");
+        if (words != null && !words.isEmpty()) return new String[]{words, ""};
+        String unit = t.text("unit_of_measurement");
+        String v = t.state;
+        if (t.domain().equals("climate") && t.number("current_temperature") != null) {
+            v = Style.number(t.number("current_temperature"));
+            unit = Style.degree(t);
+        }
+        return new String[]{Style.words(v).equals(v) || Json.tryParse(v) instanceof Double ? v : Style.words(v), unit == null ? "" : unit};
+    }
+
+    /**
+     * A Big number card (display "watch", firmware 0.35.0+, ui-scale watchCard): the icon and the name in a head above
+     * the number, the three as one group in the middle of the card, the number in the largest face that fits under the
+     * head (the setpoint's digits, the watch face, then the headline); a card too low for that keeps the name small in
+     * the top corner and the number under it, and the icon goes. The unit stands at the right in small letters.
+     */
+    private void drawWatch(Canvas c, Tessera.Tile t, RectF b, float fs, int fg, int dim, int accent, boolean on, int pastel) {
+        String[] vu = valueAndUnit(t);
+        String value = vu[0], unit = vu[1];
+        float w = b.width(), h = b.height();
+        float label = fs, small = fs * 0.88f, nameLine = label * 1.17f;
+        float circle = fs * 1.45f, gap = 0.6f * u, header = Math.max(circle, nameLine);
+        text.setTypeface(regular);
+        text.setTextSize(small);
+        float unitW = unit.isEmpty() ? 0 : Math.min(text.measureText(unit), w - 20);
+        float unitGap = unitW > 0 ? unitW + 1.2f * u : 0, numberW = w - unitGap;
+        boolean digits = value.matches("[-.,°%0-9]+");
+        float[] faces = digits ? new float[]{fs * 3.55f, fs * 2.1f, fs * 1.5f} : new float[]{fs * 2.1f, fs * 1.5f};
+        float face = 0;
+        for (float f : faces) {
+            text.setTypeface(light);
+            text.setTextSize(f);
+            if (header + gap + f * 1.17f <= h && text.measureText(value) <= numberW) { face = f; break; }
+        }
+        int ink = on ? fg : fg;
+        if (face > 0) {
+            float line = face * 1.17f, groupY = b.top + Math.max(0, (h - header - gap - line) / 2), valueY = groupY + header + gap;
+            fill.setColor(on ? withAlpha(accent, pastel != 0 ? 90 : 60) : pastel != 0 ? 0x22000000 : Style.RAISED);
+            float cy = groupY + header / 2;
+            c.drawCircle(b.left + circle / 2, cy, circle / 2, fill);
+            glyphs.setColor(on ? (pastel != 0 ? Style.DARK_TEXT : accent) : dim);
+            glyphs.setTextSize(circle * 0.56f);
+            c.drawText(Icons.forTile(getContext(), t), b.left + circle / 2, cy + circle * 0.2f, glyphs);
+            text.setTypeface(medium);
+            text.setTextSize(label);
+            text.setColor(fg);
+            float tx = b.left + circle + 1.2f * u;
+            c.drawText(fit(t.name, b.right - tx), tx, cy + label * 0.36f, text);
+            text.setTypeface(light);
+            text.setTextSize(face);
+            text.setColor(ink);
+            float base = valueY + face * 0.95f;
+            c.drawText(fit(value, numberW), b.left, base, text);
+            if (!unit.isEmpty()) {
+                text.setTypeface(regular);
+                text.setTextSize(small);
+                text.setColor(dim);
+                text.setTextAlign(Paint.Align.RIGHT);
+                c.drawText(unit, b.right, base, text);
+                text.setTextAlign(Paint.Align.LEFT);
+            }
+            return;
+        }
+        // A low card: the name small in the corner, the number under it in the largest face that fits.
+        text.setTypeface(medium);
+        text.setTextSize(small);
+        text.setColor(dim);
+        c.drawText(fit(t.name, w), b.left, b.top + small, text);
+        float below = small * 1.17f + 0.3f * u, fitted = small;
+        for (float f : new float[]{fs * 2.1f, fs * 1.5f, small}) {
+            text.setTypeface(light);
+            text.setTextSize(f);
+            if (below + f * 1.17f <= h + 0.3f * u && text.measureText(value) <= numberW) { fitted = f; break; }
+        }
+        text.setTypeface(light);
+        text.setTextSize(fitted);
+        float vw = Math.min(text.measureText(value), numberW), x = b.left + Math.max(0, (w - vw - unitGap) / 2);
+        float line = fitted * 1.17f, y = b.top + Math.min(Math.max(below, (h - line) / 2), h - line);
+        text.setColor(ink);
+        c.drawText(fit(value, numberW), x, y + fitted * 0.95f, text);
+        if (!unit.isEmpty()) {
+            text.setTypeface(regular);
+            text.setTextSize(small);
+            text.setColor(dim);
+            c.drawText(unit, x + vw + 1.2f * u, y + fitted * 0.95f, text);
+        }
+    }
+
+    /** A sensor's graph tile (display "graph"): the icon with the name and value beside it, the last hours under them. */
+    private void drawGraphTile(Canvas c, Tessera.Tile t, RectF b, float fs, int fg, int dim, int accent, boolean on, int pastel, boolean dead) {
+        float ic = Math.min(fs * 2.2f, b.height() * 0.4f);
+        float icx = b.left + ic / 2, icy = b.top + ic / 2;
+        fill.setColor(on && !dead ? withAlpha(accent, pastel != 0 ? 90 : 60) : pastel != 0 ? 0x22000000 : Style.RAISED);
+        c.drawCircle(icx, icy, ic / 2, fill);
+        glyphs.setColor(on && !dead ? (pastel != 0 ? Style.DARK_TEXT : accent) : dim);
+        glyphs.setTextSize(ic * 0.56f);
+        c.drawText(Icons.forTile(getContext(), t), icx, icy + ic * 0.2f, glyphs);
+        float tx = b.left + ic + 1.2f * u, tw = b.right - tx;
+        text.setTypeface(medium);
+        text.setTextSize(fs);
+        text.setColor(fg);
+        c.drawText(fit(t.name, tw), tx, icy - fs * 0.12f, text);
+        String line = chosenLine(t);
+        if (line == null) line = Style.stateLine(t);
+        text.setTypeface(regular);
+        text.setTextSize(fs * 0.86f);
+        text.setColor(dim);
+        c.drawText(fit(line, tw), tx, icy + fs * 1.05f, text);
+        RectF g = new RectF(b.left, b.top + ic + 1.2f * u, b.right, b.bottom);
+        if (g.height() < 2 * u) return;
+        List<Double> v = samples(t);
+        double lo = Double.MAX_VALUE, hi = -Double.MAX_VALUE;
+        for (double x : v) { lo = Math.min(lo, x); hi = Math.max(hi, x); }
+        if (hi - lo < 1e-9) { hi += 1; lo -= 1; }
+        Path path = new Path(), area = new Path();
+        float pad = 0.4f * u;
+        for (int i = 0; i < v.size(); i++) {
+            float x = g.left + g.width() * i / (v.size() - 1);
+            float y = (float) (g.bottom - pad - (v.get(i) - lo) / (hi - lo) * (g.height() - 2 * pad));
+            if (i == 0) { path.moveTo(x, y); area.moveTo(x, g.bottom); area.lineTo(x, y); }
+            else { path.lineTo(x, y); area.lineTo(x, y); }
+        }
+        area.lineTo(g.right, g.bottom);
+        area.close();
+        int colour = dead ? dim : accent;
+        fill.setColor(withAlpha(colour, 50));
+        c.drawPath(area, fill);
+        fill.setStyle(Paint.Style.STROKE);
+        fill.setStrokeWidth(0.45f * u);
+        fill.setColor(colour);
+        c.drawPath(path, fill);
+        fill.setStyle(Paint.Style.FILL);
+    }
+
     private final ClockTile clocks = new ClockTile();
     private EnergyCard energyCard;
     private MeterTile meterTile;
@@ -991,6 +1161,12 @@ public final class TileView extends View {
     private CalendarCard calendar() {
         if (calendarCard == null) calendarCard = new CalendarCard(getContext(), glyphs);
         return calendarCard;
+    }
+
+    /** How many pixels here a pixel of the board Tessera lays out for is (a 1024 x 600 board unless told otherwise). */
+    private float glass() {
+        int w = Math.max(getWidth(), getHeight()), h = Math.min(getWidth(), getHeight());
+        return Math.max(0.5f, Math.min(w / 1024f, h / 600f));
     }
 
     /** A millimetre of glass in pixels. */
@@ -2472,17 +2648,15 @@ public final class TileView extends View {
             }, 1000);
         }
         if (pictured(t) && drawLive(c, index, r)) {
-            fill.setColor(0x99000000);
-            c.drawRect(r.left, r.bottom - fs * 3.4f, r.right, r.bottom - 2.4f * u * 0.3f, fill);
             text.setTypeface(medium);
             text.setTextSize(fs * 0.9f);
             text.setColor(0xFFFFFFFF);
             text.setTextAlign(Paint.Align.LEFT);
-            c.drawText(fit(t.name, r.width() - pad * 2), r.left + pad, r.bottom - fs * 1.95f, text);
+            outlined(c, fit(t.name, r.width() - pad * 2), r.left + pad, r.bottom - fs * 1.95f);
             text.setTypeface(regular);
             text.setTextSize(fs * 0.8f);
-            text.setColor(0xFFD0D4DC);
-            c.drawText(fit(line, r.width() - pad * 2), r.left + pad, r.bottom - fs * 0.75f, text);
+            text.setColor(0xFFE6E8EC);
+            outlined(c, fit(line, r.width() - pad * 2), r.left + pad, r.bottom - fs * 0.75f);
         } else {
             int fg = pastel != 0 ? Style.DARK_TEXT : Style.TEXT, dim = pastel != 0 ? Style.DARK_DIM : Style.DIM;
             float ic = Math.min(fs * 2.7f, r.height() * 0.42f);

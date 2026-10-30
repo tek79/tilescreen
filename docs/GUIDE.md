@@ -8,7 +8,7 @@ It is built for low-memory tablets such as the 5th-gen Fire 7 running LineageOS.
 view and no Home Assistant app inside it: a small native app draws the tiles itself. It should run
 on Android 5.0 and later.
 
-This guide covers version 0.9.1.
+This guide covers version 0.9.3.
 
 ## 1. Install it on the tablet
 

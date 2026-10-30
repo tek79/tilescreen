@@ -37,6 +37,11 @@ async def main():
     record = migrate_legacy({"title": "Meters", "pages": 1, "tiles": tiles}, grid)
     compiled = compile_tiles(record["layout"], grid)
     values = [state_message(i, t, STATES) for i, t in enumerate(compiled)]
+    # The last hours, as the add-on adds them to a sensor's state (server.py: message['history']).
+    import math
+    for v in values:
+        if v["entity"] == "sensor.temp":
+            v["history"] = {"hours": 24, "values": [round(68 + 3 * math.sin(i / 4), 1) for i in range(24)]}
     print("options:", [v.get("o") for v in values][:3])
     region = {"clock_24h": False, "numbers": "english", "group_min": 1, "percent_space": False, "keepalive": 30}
     print("sync:", await sender.synchronize("text.kitchen_fire_tile_settings", record, region, values, [[{"k": "clock"}]]), sender.phase)

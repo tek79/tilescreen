@@ -21,7 +21,7 @@ import app.tilescreen.core.Tessera;
  * thresholds are the tile's options (meter.py); a value outside the range stands at its end.
  */
 final class MeterTile {
-    private static final int GREEN = 0xFF4CAF50, ORANGE = 0xFFFF9800, RED = 0xFFF44336;
+    private static final int GREEN = 0xFF4CAF50, ORANGE = 0xFFFF9800, RED = 0xFFF44336, POINTER = 0xFFFF6F22;
     private final TextPaint text = new TextPaint(Paint.ANTI_ALIAS_FLAG);
     private final TextPaint glyphs;
     private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -101,12 +101,6 @@ final class MeterTile {
         return unit.equals("%") ? v + "%" : v + " " + unit;
     }
 
-    private float fitSize(String s, float w, float size, Typeface f) {
-        text.setTypeface(f);
-        text.setTextSize(size);
-        float tw = text.measureText(s);
-        return tw > w ? size * w / tw : size;
-    }
 
     private void words(Canvas c, String s, float x, float baseline, float size, int color, Typeface f, Paint.Align a) {
         text.setTypeface(f);
@@ -125,146 +119,341 @@ final class MeterTile {
 
     private static int dim(int color) { return (color & 0xFFFFFF) | 0x40000000; }
 
-    void draw(Canvas c, Tessera.Tile t, RectF box, float fs, int ink, int muted, int track, int accent, boolean dead) {
+    /** The card's own colour, which unlit cells and the pointer's edge are mixed with. */
+    private int cardColor = 0xFFFFFFFF;
+
+    /**
+     * The meter in `box` (the card's content): `glass` is how many pixels here a pixel of the board's glass is, for the
+     * sizes the layout counts in the board's pixels; `history` the last hours, for a ring with room for them.
+     */
+    void draw(Canvas c, Tessera.Tile t, RectF box, float fs, int ink, int muted, int track, int accent, boolean dead, float glass,
+              List<Double> history, int card) {
         Plan p = plan(t, accent);
-        if (p.style.equals("tape")) tape(c, t, p, box, fs, ink, muted, track);
-        else if (p.style.equals("bar")) bar(c, t, p, box, fs, ink, muted, track);
-        else ring(c, t, p, box, fs, ink, muted, track, dead);
+        cardColor = card;
+        // Laid out in the board's own pixels, as the mockup and the firmware count them, then drawn at this glass's size.
+        float g = Math.max(0.25f, glass);
+        RectF b = new RectF(0, 0, box.width() / g, box.height() / g);
+        c.save();
+        c.translate(box.left, box.top);
+        c.scale(g, g);
+        if (p.style.equals("tape")) tape(c, t, p, b, fs, ink, muted, track, dead, 1);
+        else if (p.style.equals("bar")) bar(c, t, p, b, fs, ink, muted, track, dead, 1);
+        else ring(c, t, p, b, fs, ink, muted, track, dead, 1, history);
+        c.restore();
     }
 
-    // ---- the ring: open at the bottom, filled to the value, the tile's icon in its tinted circle in the middle
-    private void ring(Canvas c, Tessera.Tile t, Plan p, RectF box, float fs, int ink, int muted, int track, boolean dead) {
-        String value = valueText(t, p);
-        float W = box.width(), H = box.height();
-        boolean beside = W > H * 1.8f;
-        // Under the ring: the value, then the name; the ring's open ends reach into the value's line.
-        float vsMax = Math.min(fs * 1.5f, H * 0.2f), nameS = fs * 0.8f;
-        float textH = vsMax * 1.05f + nameS * 1.35f;
-        float rr, cx, cy, stroke;
+    // ---- the layout of the editor's mockup (web/src/model/meter.ts meterLayout), which follows meter_card.h ----
+    private static final float LINE = 1.2f;
+
+    private static float clamp(float v, float lo, float hi) { return Math.min(hi, Math.max(lo, v)); }
+
+    /** A text's width in em at the value's weight. */
+    private float ems(String s) {
+        text.setTypeface(medium);
+        text.setTextSize(100);
+        return text.measureText(s == null ? "" : s) / 100f;
+    }
+
+    /** The largest size up to `most` at which a text fits a width, never under `least`. */
+    private float fitSize(String s, float width, float most, float least) {
+        return clamp(Math.min(most, width / Math.max(ems(s), 0.5f)), least, most);
+    }
+
+    /** A text box of the mockup: top `y`, `size` letters on a line of 1.2; left-aligned at x or centred in x..x+w. */
+    private void box(Canvas c, String s, float x, float y, float w, float size, boolean centre, int color, Typeface f) {
+        text.setTypeface(f);
+        text.setTextSize(size);
+        text.setColor(color);
+        String shown = TextUtils.ellipsize(s == null ? "" : s, text, Math.max(1, w), TextUtils.TruncateAt.END).toString();
+        float base = y + size * (LINE - 1) / 2 + size * 0.93f;
+        text.setTextAlign(centre ? Paint.Align.CENTER : Paint.Align.LEFT);
+        c.drawText(shown, centre ? x + w / 2 : x, base, text);
+        text.setTextAlign(Paint.Align.LEFT);
+    }
+
+    /** The ring's arc, open at the bottom: 240°, from 150° clockwise, from one share of it to another. */
+    private void ringArc(Canvas c, float cx, float cy, float r, float from, float to) {
+        arc(c, new RectF(cx - r, cy - r, cx + r, cy + r), 150 + 240 * from, 240 * (to - from));
+    }
+
+    // ---- the ring: the tile's icon in a tinted circle in a 240° ring; the words under it, or beside it on a long card,
+    // and the last hours beside it on a roomy wide one
+    private void ring(Canvas c, Tessera.Tile t, Plan p, RectF b, float fs, int ink, int muted, int track, boolean dead, float glass,
+                      List<Double> history) {
+        String valueText = valueText(t, p), name = t.name;
+        float w = b.width(), h = b.height();
+        boolean roomy = history.size() > 1 && w / glass >= 360 && w > 1.3f * h;
+        float side = roomy ? w / 2 : w;
+        boolean beside = side > 1.3f * h;
+        float cx, cy, r, stroke;
+        float vx, vy, vw, size, nx = 0, ny = 0, nw = 0, nameSize = 0;
+        boolean centred, showName;
         if (beside) {
-            float d = Math.min(H, W * 0.42f);
-            stroke = Math.max(3, d * 0.09f);
-            rr = d / 2 - stroke / 2;
-            cx = box.left + d / 2;
-            cy = box.centerY();
+            stroke = clamp(h / 14, 2, 14);
+            float need = ems(valueText) * 10 + clamp(side * 0.05f, 4, 16);
+            r = Math.max(Math.max(4, h * 0.2f), Math.min(Math.min((h - stroke) / 1.5f, (side * 0.45f - stroke) / 2), (side - need - stroke) / 2));
+            cx = r + stroke / 2;
+            cy = (h - 1.5f * r) / 2 + r;
+            float x = cx + r + stroke / 2 + clamp(side * 0.05f, 4, 16), room = side - x;
+            size = fitSize(valueText, room, clamp(h * 0.3f, 11, 40), 9);
+            nameSize = fitSize(name, room, clamp(size * 0.62f, 8, 16), 7);
+            showName = size * LINE + nameSize * LINE <= h;
+            if (!showName) size = Math.min(size, h / LINE);
+            float top = (h - (size * LINE + (showName ? nameSize * LINE : 0))) / 2;
+            vx = x; vy = top; vw = room; centred = false;
+            nx = x; ny = top + size * LINE; nw = room;
         } else {
-            // The ring reaches 0.71 of its radius below its middle (its ends at 135° and 45°).
-            rr = Math.min(W * 0.42f, (H - textH) / 1.75f);
-            rr = Math.max(fs, rr);
-            stroke = Math.max(3, rr * 0.18f);
-            cx = box.centerX();
-            cy = box.top + stroke / 2 + rr;
+            r = Math.min(side / 2, h / 2);
+            for (int i = 0; i < 40; i++) {
+                float st = clamp(r / 7, 2, 16), sz = clamp(2 * r * 0.16f, 10, 34), ns = clamp(sz * 0.62f, 8, 16);
+                float needed = st / 2 + r + 0.42f * r + sz * LINE + ns * LINE;
+                if (needed <= h && 2 * r + st <= side) break;
+                r *= 0.95f;
+            }
+            stroke = clamp(r / 7, 2, 16);
+            size = clamp(2 * r * 0.16f, 10, 34);
+            nameSize = fitSize(name, side, clamp(size * 0.62f, 8, 16), 7);
+            size = fitSize(valueText, side, size, 8);
+            float cy0 = stroke / 2 + r;
+            boolean under = ems(valueText) * size > 1.4f * r && cy0 + 0.5f * r + stroke / 2 + 2 + size * LINE <= h;
+            float top = under ? cy0 + 0.5f * r + stroke / 2 + 2 : cy0 + 0.42f * r;
+            showName = top + size * LINE + nameSize * LINE <= h;
+            if (!showName) top = Math.min(top, h - size * LINE);
+            if (top + size * LINE > h) { size = Math.max(6, (h - top) / LINE); showName = false; }
+            float total = top + size * LINE + (showName ? nameSize * LINE : 0), drop = Math.max(0, (h - total) / 2);
+            cx = side / 2;
+            cy = cy0 + drop;
+            vx = 0; vy = top + drop; vw = side; centred = true;
+            nx = 0; ny = top + drop + size * LINE; nw = side;
         }
-        float d = 2 * rr;
-        RectF oval = new RectF(cx - rr, cy - rr, cx + rr, cy + rr);
+        float ox = b.left, oy = b.top;
+        double v = p.value;
+        boolean known = !dead && !Double.isNaN(v);
+        int color = known ? p.colorAt(Math.max(p.low, Math.min(p.high, v))) : muted;
         line.setStrokeCap(Paint.Cap.ROUND);
         line.setStrokeWidth(stroke);
         line.setColor(track);
-        arc(c, oval, 135, 270);
-        float frac = p.fraction(p.value);
-        if (frac > 0 && !dead) {
-            line.setColor(p.colorAt(Math.max(p.low, Math.min(p.high, p.value))));
-            arc(c, oval, 135, 270 * frac);
+        ringArc(c, ox + cx, oy + cy, r, 0, 1);
+        float frac = known ? p.fraction(v) : 0;
+        if (frac > 0) {
+            line.setColor(color);
+            ringArc(c, ox + cx, oy + cy, r, 0, Math.max(frac, 0.005f));
         }
-        // The icon in its tinted circle in the middle.
-        float ic = rr * 0.9f;
-        int tone = p.colorAt(Double.isNaN(p.value) ? p.low : p.value);
-        fill.setColor(dead ? track : (tone & 0xFFFFFF) | 0x33000000);
-        c.drawCircle(cx, cy, ic / 2, fill);
-        glyphs.setColor(dead ? muted : tone);
-        glyphs.setTextSize(ic * 0.55f);
-        c.drawText(Icons.forTile(context, t), cx, cy + ic * 0.2f, glyphs);
-        if (beside) {
-            float tx = box.left + d + fs, tw = box.right - tx;
-            float vs = fitSize(value, tw, fs * 2, light);
-            words(c, value, tx, box.centerY() + vs * 0.1f, vs, ink, light, Paint.Align.LEFT);
-            words(c, fit(t.name, tw, fs * 0.9f, regular), tx, box.centerY() + vs * 0.1f + fs * 1.3f, fs * 0.9f, muted, regular, Paint.Align.LEFT);
-        } else {
-            // The value between the ring's ends, the name quiet under it.
-            float vs = fitSize(value, Math.min(W, rr * 2.6f), vsMax, medium);
-            float vy = Math.min(box.bottom - nameS * 1.35f, cy + rr * 0.71f + vs * 0.45f);
-            words(c, value, cx, vy, vs, ink, medium, Paint.Align.CENTER);
-            words(c, fit(t.name, W, nameS, regular), cx, vy + nameS * 1.3f, nameS, muted, regular, Paint.Align.CENTER);
-        }
-    }
-
-    // ---- the tape: the name small and the value large over a still ruler, one pointer at the value
-    private void tape(Canvas c, Tessera.Tile t, Plan p, RectF box, float fs, int ink, int muted, int track) {
-        String value = valueText(t, p);
-        float W = box.width(), H = box.height();
-        words(c, fit(t.name.toUpperCase(Locale.getDefault()), W, fs * 0.75f, medium), box.left, box.top + fs * 0.8f, fs * 0.75f, muted, medium, Paint.Align.LEFT);
-        float vs = fitSize(value, W, Math.min(fs * 2.6f, H * 0.28f), light);
-        words(c, value, box.left, box.top + fs * 1.2f + vs * 0.85f, vs, ink, light, Paint.Align.LEFT);
-        boolean percent = "%".equals(t.text("unit_of_measurement"));
-        float endsH = percent ? 0 : fs * 1.0f;
-        float rulerTop = box.top + fs * 1.5f + vs, rulerBottom = box.bottom - endsH;
-        if (rulerBottom - rulerTop < fs * 0.6f) rulerTop = rulerBottom - fs * 0.6f;
-        int marks = Math.max(11, Math.min(51, (int) (W / (fs * 0.6f)) | 1));
-        line.setStrokeCap(Paint.Cap.BUTT);
-        line.setStrokeWidth(1);
-        for (int i = 0; i < marks; i++) {
-            float x = box.left + W * i / (marks - 1);
-            boolean major = i % 5 == 0;
-            float top = major ? rulerTop : rulerTop + (rulerBottom - rulerTop) * 0.35f;
-            line.setColor(p.thresholds != null ? (p.colorAt(p.low + (p.high - p.low) * i / (marks - 1)) & 0xFFFFFF) | 0x90000000 : major ? muted : track);
-            c.drawLine(x, top, x, rulerBottom, line);
-        }
-        // The pointer: the segment's colour, or the tape's orange with one segment.
-        float frac = p.fraction(p.value);
-        float px = box.left + W * frac;
-        int color = p.thresholds != null ? p.colorAt(p.value) : (t.options != null && Json.arr(t.options.get("colors")) != null ? p.colors[0] : ORANGE);
-        line.setColor(color);
-        line.setStrokeWidth(Math.max(3, fs * 0.22f));
-        line.setStrokeCap(Paint.Cap.ROUND);
-        c.drawLine(px, rulerTop - fs * 0.2f, px, rulerBottom, line);
-        if (!percent) {
-            words(c, number(p.low), box.left, box.bottom - fs * 0.1f, fs * 0.75f, muted, regular, Paint.Align.LEFT);
-            words(c, number(p.high), box.right, box.bottom - fs * 0.1f, fs * 0.75f, muted, regular, Paint.Align.RIGHT);
-        }
-    }
-
-    // ---- the bar: the value and the name at the top, narrow cells lit in the value's colour over the room left
-    private void bar(Canvas c, Tessera.Tile t, Plan p, RectF box, float fs, int ink, int muted, int track) {
-        String value = valueText(t, p);
-        float W = box.width(), H = box.height();
-        boolean standing = H > W * 1.25f;
-        float frac = p.fraction(p.value);
-        if (standing) {
-            // A standing card stands the bar up beside the words.
-            float bw = Math.min(W * 0.35f, fs * 3);
-            RectF cells = new RectF(box.right - bw, box.top, box.right, box.bottom);
-            float tw = W - bw - fs;
-            float vs = fitSize(value, tw, fs * 1.8f, light);
-            words(c, value, box.left, box.top + vs * 0.9f, vs, ink, light, Paint.Align.LEFT);
-            words(c, fit(t.name, tw, fs * 0.85f, regular), box.left, box.top + vs * 0.9f + fs * 1.2f, fs * 0.85f, muted, regular, Paint.Align.LEFT);
-            int n = Math.max(8, Math.min(60, (int) (cells.height() / (fs * 0.55f))));
-            float gap = Math.max(1, cells.height() / n * 0.3f), ch = (cells.height() - (n - 1) * gap) / n;
-            for (int i = 0; i < n; i++) {
-                double at = p.low + (p.high - p.low) * (i + 0.5) / n;
-                int col = p.thresholds != null ? p.colorAt(at) : p.colors[0];
-                boolean lit = (i + 0.5f) / n <= frac;
-                fill.setColor(lit ? col : dim(col));
-                float y = cells.bottom - (i + 1) * ch - i * gap;
-                c.drawRoundRect(new RectF(cells.left, y, cells.right, y + ch), ch * 0.25f, ch * 0.25f, fill);
+        fill.setColor((color & 0xFFFFFF) | 0x33000000);
+        c.drawCircle(ox + cx, oy + cy, r * 0.48f, fill);
+        glyphs.setColor(color);
+        glyphs.setTextSize(r * 0.42f * 1.3f);
+        c.drawText(Icons.forTile(context, t), ox + cx, oy + cy + r * 0.42f * 0.45f, glyphs);
+        box(c, valueText, ox + vx, oy + vy, vw, size, centred, ink, medium);
+        if (showName) box(c, name, ox + nx, oy + ny, nw, nameSize, centred, muted, regular);
+        if (roomy) {
+            // The last hours, their line and the room under it in the value's colour, beside the ring.
+            float lx = w / 2 + clamp(w * 0.02f, 4, 12), lw = w / 2 - clamp(w * 0.02f, 4, 12);
+            double low = Double.MAX_VALUE, high = -Double.MAX_VALUE;
+            for (double hv : history) { low = Math.min(low, hv); high = Math.max(high, hv); }
+            Path path = new Path(), area = new Path();
+            float pad = 2;
+            for (int i = 0; i < history.size(); i++) {
+                float x = ox + lx + (float) i / Math.max(1, history.size() - 1) * lw;
+                float y = oy + h - pad - (float) (high > low ? (history.get(i) - low) / (high - low) : 0.5) * (h - 2 * pad - 4);
+                if (i == 0) { path.moveTo(x, y); area.moveTo(x, oy + h); area.lineTo(x, y); }
+                else { path.lineTo(x, y); area.lineTo(x, y); }
             }
+            area.lineTo(ox + lx + lw, oy + h);
+            area.close();
+            fill.setColor((color & 0xFFFFFF) | 0x33000000);
+            c.drawPath(area, fill);
+            line.setColor(color);
+            line.setStrokeWidth(Math.max(1.5f, 1.5f * glass));
+            line.setStrokeCap(Paint.Cap.ROUND);
+            c.drawPath(path, line);
+        }
+    }
+
+    // ---- the tape: the name in small capitals, the value large over a still ruler, one pointer at the value
+    private void tape(Canvas c, Tessera.Tile t, Plan p, RectF b, float fs, int ink, int muted, int track, boolean dead, float glass) {
+        String unit = Json.str(t.extra, "sw") != null && !Json.str(t.extra, "sw").isEmpty() ? "" : t.text("unit_of_measurement");
+        if (unit == null) unit = "";
+        String number = Json.str(t.extra, "sw") != null && !Json.str(t.extra, "sw").isEmpty() ? Json.str(t.extra, "sw") : t.state;
+        String name = t.name;
+        boolean percent = "%".equals(unit);
+        String[] ends = percent ? null : new String[]{number(p.low), number(p.high)};
+        float w = b.width(), h = b.height(), hair = Math.max(1, glass);
+        String caps = name.toUpperCase(Locale.getDefault());
+        float capsEms = ems(caps) + 0.04f * name.length();
+        float nameSize = clamp(Math.min(clamp(h * 0.09f, 8, 14), w / Math.max(capsEms, 0.5f)), 7, 14);
+        float size = fitSize(number + (unit.isEmpty() ? "" : "MM"), w, clamp(h * 0.34f, 12, 72), 10);
+        float lng = clamp(h * 0.12f, 6, 28);
+        float endSize = clamp(nameSize, 8, 13);
+        float pointerOver = Math.max(2, lng * 0.25f), rulerRoom = pointerOver + lng;
+        float endsRoom = ends != null ? endSize * LINE + 2 : 0;
+        boolean stacked = nameSize * LINE + size * LINE + rulerRoom + endsRoom + 6 <= h;
+        if (!stacked) {
+            size = fitSize(number + (unit.isEmpty() ? "" : "MM") + name, w, clamp(h * 0.4f, 10, 40), 9);
+            nameSize = clamp(size * 0.55f, 7, 12);
+            lng = clamp(h * 0.18f, 4, 20);
+            if (size * LINE + lng * 1.25f + endsRoom + 4 > h) endsRoom = 0;
+            if (size * LINE + lng * 1.25f + 4 > h) size = Math.max(7, (h - lng * 1.25f - 4) / LINE);
+        }
+        boolean showEnds = ends != null && endsRoom > 0;
+        float endWidth = 0;
+        if (showEnds) {
+            text.setTypeface(medium);
+            text.setTextSize(endSize);
+            endWidth = Math.max(text.measureText(ends[0]), text.measureText(ends[1]));
+        }
+        float x0 = Math.max(hair, endWidth / 2), x1 = w - x0;
+        float over = Math.max(2, lng * 0.25f), below = Math.min(over, 2);
+        float base = h - (showEnds ? endsRoom : 0) - below - hair;
+        float wordsH = stacked ? nameSize * LINE + size * LINE : size * LINE;
+        float top = Math.max(0, (base - lng - over - wordsH) / 2);
+        float middle = Math.max(nameSize * LINE, (nameSize * LINE + base - lng - over - size * LINE) / 2);
+        float ox = b.left, oy = b.top;
+        // The words: the name above (or beside) the value, the unit small after the number.
+        float nx = 0, ny, nw, vx, vy, vw;
+        if (stacked) { ny = 0; nw = w; vx = 0; vy = middle; vw = w; }
+        else { ny = top + (size - nameSize) * 0.8f; nw = w / 2; vx = w / 2; vy = top; vw = w / 2; }
+        text.setTypeface(medium);
+        text.setTextSize(nameSize);
+        box(c, caps, ox + nx, oy + ny, nw, nameSize, false, muted, regular);
+        text.setTypeface(regular);
+        text.setTextSize(size);
+        float numW = text.measureText(number);
+        text.setTextSize(size * 0.45f);
+        float unitW = unit.isEmpty() ? 0 : text.measureText(unit) + size * 0.15f;
+        float startX = stacked ? vx + Math.max(0, (vw - numW - unitW) / 2) : vx;
+        box(c, number, ox + startX, oy + vy, vw, size, false, ink, regular);
+        if (!unit.isEmpty() && !dead) {
+            float base2 = oy + vy + size * (LINE - 1) / 2 + size * 0.93f;
+            text.setTypeface(regular);
+            text.setTextSize(size * 0.45f);
+            text.setColor(muted);
+            c.drawText(unit, ox + startX + numW + size * 0.15f, base2, text);
+        }
+        // The ruler: a hairline with long ticks on round steps and short ones between.
+        line.setStrokeCap(Paint.Cap.BUTT);
+        line.setStrokeWidth(hair);
+        line.setColor(track);
+        c.drawLine(ox + x0, oy + base, ox + x1, oy + base, line);
+        for (float[] tick : tapeTicks(p.low, p.high, x0, x1, 5 * glass)) {
+            line.setColor(tick[1] > 0 ? muted : track);
+            c.drawLine(ox + tick[0], oy + base, ox + tick[0], oy + base - (tick[1] > 0 ? lng : lng * 0.5f), line);
+        }
+        boolean known = !dead && !Double.isNaN(p.value);
+        if (known) {
+            float px = ox + x0 + p.fraction(p.value) * (x1 - x0);
+            int pointer = p.colors.length > 1 || (t.options != null && Json.arr(t.options.get("colors")) != null) ? p.colorAt(p.value) : POINTER;
+            float pw = Math.max(2, 3 * glass);
+            line.setStrokeCap(Paint.Cap.ROUND);
+            line.setStrokeWidth(pw + 2 * hair);
+            line.setColor(cardColor);
+            c.drawLine(px, oy + base - lng - over, px, oy + base + below, line);
+            line.setStrokeWidth(pw);
+            line.setColor(pointer);
+            c.drawLine(px, oy + base - lng - over, px, oy + base + below, line);
+        }
+        if (showEnds) {
+            text.setTypeface(medium);
+            text.setTextSize(endSize);
+            text.setColor(muted);
+            text.setTextAlign(Paint.Align.CENTER);
+            float ey = oy + base + below + 2 + endSize * (LINE - 1) / 2 + endSize * 0.93f;
+            c.drawText(ends[0], ox + x0, ey, text);
+            c.drawText(ends[1], ox + x1, ey, text);
+            text.setTextAlign(Paint.Align.LEFT);
+        }
+    }
+
+    /** A tape's still ruler (meter.ts tapeTicks): {x, long (1/0)} for at most five long ticks on round steps of the range
+     * (its ends among them), short ones between where they stand at least `room` apart. */
+    private static List<float[]> tapeTicks(double low, double high, float x0, float x1, float room) {
+        List<float[]> ticks = new java.util.ArrayList<float[]>();
+        double span = high - low, width = x1 - x0;
+        if (!(span > 0) || !(width > 0)) return ticks;
+        double power = Math.pow(10, Math.floor(Math.log10(span)));
+        double step = span;
+        for (double m : new double[]{0.1, 0.2, 0.25, 0.5, 1, 2, 2.5, 5, 10}) {
+            if (between(low, high, m * power).size() <= 3) { step = m * power; break; }
+        }
+        List<Double> longs = new java.util.ArrayList<Double>();
+        longs.add(low);
+        longs.addAll(between(low, high, step));
+        longs.add(high);
+        for (double v : longs) ticks.add(new float[]{(float) (x0 + (v - low) / span * width), 1});
+        for (int parts : new int[]{5, 2}) {
+            double gap = step / parts / span * width;
+            if (gap < room) continue;
+            for (int i = 0; i < longs.size() - 1; i++) {
+                for (double v = longs.get(i) + step / parts; v < longs.get(i + 1) - step / parts / 2; v += step / parts) {
+                    ticks.add(new float[]{(float) (x0 + (v - low) / span * width), 0});
+                }
+            }
+            break;
+        }
+        return ticks;
+    }
+
+    private static List<Double> between(double low, double high, double step) {
+        List<Double> out = new java.util.ArrayList<Double>();
+        for (double v = Math.ceil(low / step - 1e-9) * step; v < high - step / 2; v += step) if (v > low + step / 2) out.add(v);
+        return out;
+    }
+
+    // ---- the bar: lit cells in the colour of their place, unlit ones a dimmed tint of it; standing up on a tall card
+    private void bar(Canvas c, Tessera.Tile t, Plan p, RectF b, float fs, int ink, int muted, int track, boolean dead, float glass) {
+        String valueText = valueText(t, p), title = t.name;
+        float w = b.width(), h = b.height(), ox = b.left, oy = b.top;
+        float cell = clamp(4 * glass, 2, 8), gap = Math.max(1, cell * 0.6f);
+        boolean known = !dead && !Double.isNaN(p.value);
+        float frac = known ? p.fraction(p.value) : 0;
+        boolean standing = h > 1.1f * w;
+        if (standing) {
+            float barW = Math.max(cell * 3, w * 0.3f), x = w - barW, room = x - clamp(w * 0.05f, 4, 12);
+            float size = fitSize(valueText, room, clamp(w * 0.16f, 10, 36), 8), nameSize = fitSize(title, room, clamp(size * 0.62f, 8, 16), 7);
+            int count = Math.max(4, (int) ((h + gap) / (cell + gap)));
+            box(c, valueText, ox, oy, room, size, false, ink, medium);
+            box(c, title, ox, oy + size * LINE, room, nameSize, false, muted, regular);
+            cells(c, p, ox + x, oy, barW, h, count, gap, true, frac, known, muted);
             return;
         }
-        float vs = fitSize(value, W * 0.6f, Math.min(fs * 1.8f, H * 0.3f), light);
-        words(c, value, box.left, box.top + vs * 0.9f, vs, ink, light, Paint.Align.LEFT);
-        words(c, fit(t.name, W * 0.4f - fs, fs * 0.85f, regular), box.right, box.top + vs * 0.8f, fs * 0.85f, muted, regular, Paint.Align.RIGHT);
-        RectF cells = new RectF(box.left, box.top + vs * 1.3f, box.right, box.bottom);
-        if (cells.height() < 4) return;
-        // Wider cells on a big card, never more than 60, as a real LED bar graph has.
-        int n = Math.max(10, Math.min(60, (int) (W / (fs * 0.7f))));
-        float gap = Math.max(1, W / n * 0.28f), cw = (W - (n - 1) * gap) / n;
-        for (int i = 0; i < n; i++) {
-            double at = p.low + (p.high - p.low) * (i + 0.5) / n;
-            int col = p.thresholds != null ? p.colorAt(at) : p.colors[0];
-            boolean lit = (i + 0.5f) / n <= frac;
-            fill.setColor(lit ? col : dim(col));
-            float x = cells.left + i * (cw + gap);
-            c.drawRoundRect(new RectF(x, cells.top, x + cw, cells.bottom), cw * 0.25f, cw * 0.25f, fill);
+        float size = fitSize(valueText, w, clamp(Math.min(h * 0.24f, w * 0.14f), 10, 40), 8), nameSize = fitSize(title, w, clamp(size * 0.62f, 8, 16), 7);
+        float least = Math.max(6, h * 0.22f);
+        float wordsH = size * LINE + nameSize * LINE + clamp(h * 0.05f, 2, 10);
+        float nx = 0, ny = size * LINE, nw = w;
+        boolean showName = true;
+        if (h - wordsH < least) {
+            size = Math.min(size, Math.max(7, (h - least - 2) / LINE));
+            nameSize = clamp(size * 0.7f, 7, 14);
+            wordsH = size * LINE + 2;
+            float valueW = Math.min(w * 0.55f, ems(valueText) * size + 4);
+            nx = valueW + 4; ny = (size - nameSize) * 0.8f; nw = Math.max(0, w - valueW - 4);
+            if (nw < nameSize * 2) showName = false;
         }
+        int count = Math.max(4, (int) ((w + gap) / (cell + gap)));
+        box(c, valueText, ox, oy, showName && nx > 0 ? nx - 4 : w, size, false, ink, medium);
+        if (showName) box(c, title, ox + nx, oy + ny, nw, nameSize, false, muted, regular);
+        cells(c, p, ox, oy + wordsH, w, Math.max(2, h - wordsH), count, gap, false, frac, known, muted);
+    }
+
+    private void cells(Canvas c, Plan p, float x, float y, float w, float h, int count, float gap, boolean vertical, float frac,
+                       boolean known, int off) {
+        float length = vertical ? h : w, pitch = (length + gap) / count, size = pitch - gap;
+        for (int i = 0; i < count; i++) {
+            float middle = (i + 0.5f) / count;
+            int paint = known ? p.colorAt(p.low + middle * (p.high - p.low)) : off;
+            fill.setColor(known && middle <= frac ? paint : mix(paint, cardColor, 0.22f));
+            if (vertical) c.drawRect(x, y + h - (i + 1) * pitch + gap, x + w, y + h - (i + 1) * pitch + gap + size, fill);
+            else c.drawRect(x + i * pitch, y, x + i * pitch + size, y + h, fill);
+        }
+    }
+
+    private static int mix(int a, int b, float weight) {
+        int out = 0xFF000000;
+        for (int shift : new int[]{16, 8, 0}) {
+            int v = Math.round(((a >> shift) & 255) * weight + ((b >> shift) & 255) * (1 - weight));
+            out |= v << shift;
+        }
+        return out;
     }
 
     private static String number(double v) {

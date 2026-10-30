@@ -14,6 +14,8 @@ public class Canvas {
     public int save() { saved.push(new Object[]{g.getTransform(), g.getClip()}); return saved.size(); }
     public void restore() { Object[] o = saved.pop(); g.setTransform((AffineTransform) o[0]); g.setClip((Shape) o[1]); }
     public void translate(float x, float y) { g.translate(x, y); }
+    public void scale(float x, float y) { g.scale(x, y); }
+    public boolean clipPath(Path path) { g.clip(path.p); return true; }
     public boolean clipRect(float l, float t, float r, float b) { g.clip(new Rectangle2D.Float(l, t, r - l, b - t)); return true; }
     public void drawLine(float x1, float y1, float x2, float y2, Paint p) { paint(p); g.draw(new Line2D.Float(x1, y1, x2, y2)); }
     private void shape(Shape s, Paint p) { paint(p); if (p.style == Paint.Style.STROKE) g.draw(s); else g.fill(s); }
@@ -37,6 +39,12 @@ public class Canvas {
         g.setFont(p.font());
         float w = p.measureText(s);
         if (p.align == Paint.Align.CENTER) x -= w / 2; else if (p.align == Paint.Align.RIGHT) x -= w;
+        if (p.style == Paint.Style.STROKE) {
+            java.awt.Shape outline = p.font().createGlyphVector(g.getFontRenderContext(), s).getOutline(x, y);
+            g.setStroke(new java.awt.BasicStroke(p.stroke, java.awt.BasicStroke.CAP_ROUND, java.awt.BasicStroke.JOIN_ROUND));
+            g.draw(outline);
+            return;
+        }
         g.drawString(s, x, y);
     }
 }

@@ -17,6 +17,9 @@ public class Paint {
     public void setTypeface(Typeface t) { face = t; }
     public void setTextAlign(Align a) { align = a; }
     public void setStyle(Style s) { style = s; }
+    public Style getStyle() { return style; }
+    public enum Join { MITER, ROUND, BEVEL }
+    public void setStrokeJoin(Join j) {}
     public void setStrokeWidth(float w) { stroke = w; }
     java.awt.Font font() { return face.font.deriveFont(size); }
     static final java.awt.image.BufferedImage SCRATCH = new java.awt.image.BufferedImage(1, 1, java.awt.image.BufferedImage.TYPE_INT_ARGB);

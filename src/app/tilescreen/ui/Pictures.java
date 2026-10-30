@@ -32,11 +32,16 @@ final class Pictures {
 
     interface Redraw { void redraw(); }
 
-    private static final long PATIENT = 20000;
+    /** A link that does not come is asked for again after this, as camera_view::ASK_AGAIN_MS. */
+    private static final long PATIENT = 10000;
+    /** What a slot showed stays this long while the picture after it is on its way (MEDIA_FACE_WAIT_MS). */
+    private static final long HOLD_OLD = 8000;
     private static final int FAILS = 3;
 
     private static final class Slot {
         String wish = "";
+        Bitmap old;
+        long oldUntil;
         long asked, fetched;
         boolean busy;
         int fails;
@@ -59,13 +64,22 @@ final class Pictures {
     }
 
     /** Whether what is wanted of a kind changed; if so its picture is forgotten and asked for again. */
-    synchronized boolean want(String kind, String wish) {
+    synchronized boolean want(String kind, String wish) { return want(kind, wish, true); }
+
+    /** As want(kind, wish); `holdOld` false when the picture shown no longer fits what is asked (another page's frames). */
+    synchronized boolean want(String kind, String wish, boolean holdOld) {
         Slot s = slot(kind);
         if (wish.equals(s.wish)) return false;
+        if (!holdOld) s.old = null;
         s.wish = wish;
         s.asked = 0;
         s.fetched = 0;
         s.fails = 0;
+        // The picture it showed stays a moment, so a new track or a new size doesn't flash an empty tile.
+        if (s.img != null && holdOld) {
+            s.old = s.img;
+            s.oldUntil = System.currentTimeMillis() + HOLD_OLD;
+        }
         s.img = null;
         s.url = null;
         return true;
@@ -99,7 +113,13 @@ final class Pictures {
         if (askNow) ask.run();
         if (loadNow) load(s, p.url);
         synchronized (this) {
-            return s.img;
+            if (s.img != null) {
+                s.old = null;
+                return s.img;
+            }
+            if (s.old != null && System.currentTimeMillis() < s.oldUntil) return s.old;
+            s.old = null;
+            return null;
         }
     }
 
