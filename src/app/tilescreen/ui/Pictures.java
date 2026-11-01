@@ -47,6 +47,13 @@ final class Pictures {
         int fails;
         Bitmap img;
         String url;
+        /** A live stream's link this slot pulls pictures from now, or null; when it was last wanted. */
+        volatile String liveUrl;
+        volatile long lastWant;
+        /** The most pictures a second it asks for. */
+        volatile int pps = 5;
+        /** A live link that ended: never pulled again, the next picture comes from a new question. */
+        volatile String deadUrl;
     }
 
     private final Map<String, Slot> slots = new HashMap<String, Slot>();
@@ -82,8 +89,12 @@ final class Pictures {
         }
         s.img = null;
         s.url = null;
+        s.liveUrl = null;
         return true;
     }
+
+    /** The most pictures a second a live slot of this kind asks for (a tile 5, a camera full screen 8). */
+    synchronized void pace(String kind, int pps) { slot(kind).pps = Math.max(1, Math.min(10, pps)); }
 
     synchronized void forget(String kind) {
         slots.remove(kind);
@@ -100,11 +111,20 @@ final class Pictures {
         Slot s;
         synchronized (this) {
             s = slot(kind);
-            boolean ready = p != null && (entity == null || entity.isEmpty() || entity.equals(p.entity));
+            boolean ready = p != null && (entity == null || entity.isEmpty() || p.entity.isEmpty() || entity.equals(p.entity))
+                    && !p.url.equals(s.deadUrl);
+            s.lastWant = now;
             if (s.asked == 0 || s.fails >= FAILS || (!ready && now - s.asked > PATIENT)) {
                 s.asked = now;
                 s.fails = 0;
+                s.liveUrl = null;
                 askNow = true;
+            } else if (ready && p.url.endsWith(".mjpeg")) {
+                // A live stream: one puller for it, which asks for each next picture while the slot is wanted.
+                if (!p.url.equals(s.liveUrl)) {
+                    s.liveUrl = p.url;
+                    pull(s, p.url);
+                }
             } else if (ready && !s.busy && (now - s.fetched >= every || !p.url.equals(s.url))) {
                 s.busy = true;
                 loadNow = true;
@@ -121,6 +141,137 @@ final class Pictures {
             s.old = null;
             return null;
         }
+    }
+
+    /**
+     * A live camera's pictures (docs/CAMERA.md, "Live on the P4 boards"): GET the link's `.jpg` over a kept connection, and
+     * the add-on answers with the JPEG of the camera's newest frame once it is newer than the last, or 204 after two
+     * seconds. An add-on that does not know the ask answers 404: the `.mjpeg` stream is read then, keeping the newest
+     * picture. It ends when the slot no longer wants it (another page, a card over it) or its link changed, and asks for a
+     * new link when the stream goes away.
+     */
+    private void pull(final Slot s, final String streamUrl) {
+        new Thread(new Runnable() {
+            public void run() {
+                String ask = streamUrl.substring(0, streamUrl.length() - ".mjpeg".length()) + ".jpg";
+                int errors = 0, frames = 0;
+                long started = System.currentTimeMillis(), lastPicture = started;
+                boolean stale = false;
+                app.tilescreen.App.get().log("live: pulling " + ask);
+                while (streamUrl.equals(s.liveUrl) && System.currentTimeMillis() - s.lastWant < 2500) {
+                    long begun = System.currentTimeMillis();
+                    try {
+                        HttpURLConnection c = (HttpURLConnection) new URL(ask).openConnection();
+                        c.setConnectTimeout(5000);
+                        c.setReadTimeout(8000);
+                        int code = c.getResponseCode();
+                        if (code == 200) {
+                            InputStream in = c.getInputStream();
+                            Bitmap got = BitmapFactory.decodeStream(in);
+                            in.close();
+                            if (got != null && streamUrl.equals(s.liveUrl)) {
+                                synchronized (Pictures.this) {
+                                    s.img = got;
+                                    s.url = streamUrl;
+                                }
+                                frames++;
+                                lastPicture = System.currentTimeMillis();
+                                redraw.redraw();
+                            }
+                            errors = 0;
+                        } else if (code == 204) {
+                            c.getInputStream().close();
+                            errors = 0;
+                        } else if (code == 404) {
+                            c.disconnect();
+                            readStream(s, streamUrl);
+                            break;
+                        } else {
+                            c.disconnect();
+                            errors++;
+                        }
+                    } catch (Exception e) {
+                        errors++;
+                        if (errors == 1) app.tilescreen.App.get().log("live: " + ask + ": " + e);
+                    }
+                    if (errors >= 4) break;
+                    // Only "nothing newer" for this long: the add-on's camera started over under the old link (its
+                    // pictures count from 0 again, below the last one this link took), so it would answer 204 for ever.
+                    if (System.currentTimeMillis() - lastPicture > 10000) {
+                        stale = true;
+                        break;
+                    }
+                    long wait = 1000 / Math.max(1, s.pps) - (System.currentTimeMillis() - begun);
+                    if (errors > 0) wait = Math.max(wait, 500);
+                    if (wait > 0) {
+                        try { Thread.sleep(wait); } catch (InterruptedException ignored) {}
+                    }
+                }
+                long secs = Math.max(1, (System.currentTimeMillis() - started) / 1000);
+                app.tilescreen.App.get().log("live: ended " + ask + " after " + secs + " s, " + frames + " pictures"
+                        + (errors >= 4 ? " (the link stopped answering)" : stale ? " (no new picture for 10 s; asking again)" : ""));
+                synchronized (Pictures.this) {
+                    if (streamUrl.equals(s.liveUrl)) {
+                        s.liveUrl = null;
+                        // A link is used once: the next time the slot is wanted (now, or back on its page) it asks a new
+                        // question, which gets a new link, or a still when the streams are full.
+                        s.deadUrl = streamUrl;
+                        s.asked = 0;
+                    }
+                }
+            }
+        }, "live").start();
+    }
+
+    /** The `.mjpeg` stream itself (an add-on without the ask): each part a JPEG with its Content-Length. */
+    private void readStream(Slot s, String streamUrl) {
+        try {
+            HttpURLConnection c = (HttpURLConnection) new URL(streamUrl).openConnection();
+            c.setConnectTimeout(5000);
+            c.setReadTimeout(16000);
+            InputStream in = new java.io.BufferedInputStream(c.getInputStream(), 65536);
+            while (streamUrl.equals(s.liveUrl) && System.currentTimeMillis() - s.lastWant < 2500) {
+                int length = -1;
+                String line;
+                while ((line = readLine(in)) != null) {
+                    if (line.isEmpty() && length >= 0) break;
+                    if (line.toLowerCase(java.util.Locale.ROOT).startsWith("content-length:")) {
+                        length = Integer.parseInt(line.substring(15).trim());
+                    }
+                }
+                if (line == null || length <= 0 || length > 4 * 1024 * 1024) break;
+                byte[] jpeg = new byte[length];
+                int at = 0;
+                while (at < length) {
+                    int n = in.read(jpeg, at, length - at);
+                    if (n < 0) break;
+                    at += n;
+                }
+                if (at < length) break;
+                Bitmap got = BitmapFactory.decodeByteArray(jpeg, 0, length);
+                if (got != null) {
+                    synchronized (this) {
+                        s.img = got;
+                        s.url = streamUrl;
+                    }
+                    redraw.redraw();
+                }
+            }
+            in.close();
+            c.disconnect();
+        } catch (Exception e) {
+            app.tilescreen.App.get().log("live: stream " + streamUrl + ": " + e);
+        }
+    }
+
+    private static String readLine(InputStream in) throws java.io.IOException {
+        StringBuilder b = new StringBuilder();
+        int ch;
+        while ((ch = in.read()) >= 0) {
+            if (ch == '\n') return b.toString().trim();
+            if (b.length() < 200) b.append((char) ch);
+        }
+        return b.length() > 0 ? b.toString().trim() : null;
     }
 
     private void load(final Slot s, final String url) {

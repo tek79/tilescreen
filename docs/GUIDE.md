@@ -8,7 +8,7 @@ It is built for low-memory tablets such as the 5th-gen Fire 7 running LineageOS.
 view and no Home Assistant app inside it: a small native app draws the tiles itself. It should run
 on Android 5.0 and later.
 
-This guide covers version 0.9.3.
+This guide covers version 0.10.1.
 
 ## 1. Install it on the tablet
 
@@ -120,13 +120,13 @@ A new screen starts from Tessera's defaults (standby after 10 minutes at 20%, ni
 
 ## What works and what doesn't yet
 
-Drawn: lights (with their colour, white shade and effects page: effect, palette, preset, speed and the like), switches, fans, input booleans, scenes, scripts, buttons, automations, covers
+Drawn: lights (with their colour, white shade and effects page: effect, palette, preset, speed and the like, and their presets), switches, fans, input booleans, scenes, scripts, buttons, automations, covers
 (open/stop/close, position, tilt), climate (−/+, the big two-row setpoint, the mode bar), humidifiers,
 calendars (every view of the tile, the full screen with Up next, Day, Week and Month, Free or busy, and a room's sign with its booking keys), sensors with the meter display (ring, tape, bar), sensors and binary sensors (their card shows the history of the last hour, day or week, a line for numbers and a timeline for states), numbers and selects, media players (volume and mute, playback keys,
-power and input in the card, its library behind the key at the top right), favourite tiles (a tap plays or pauses what the favourite holds), locks, robot vacuums (the keys the robot has on its tile; its card with the map, cleaning by area, routines, and suction and mop), alarm panels, timers, people, the sun, weather, the
-clock tile (dial, analog, flip and digital), the energy card (live power from Home Assistant's Energy settings, moving dots or calm lines; a tap on a circle opens its sensor's history), "go to page" tiles, camera tiles set to **Live picture**, players set to **Album cover**,
+power and input in the card, its library behind the key at the top right), favourite tiles (a tap plays or pauses what the favourite holds), locks, robot vacuums (the keys the robot has on its tile, or on a tile two rows high its map, rooms or routines; its card with the map, cleaning by area, routines, and suction and mop), template tiles, alarm panels, timers, people, the sun, weather, the
+clock tile (dial, analog, flip and digital), the energy card (live power from Home Assistant's Energy settings, moving dots or calm lines; a tap on a circle opens its sensor's history), "go to page" tiles, camera tiles set to **Live picture** (streaming when set to Live), players set to **Album cover**,
 people set to **Map**, a camera full size in its card, pastel tile colors, top bar items, multiple
-pages, hidden detail pages, custom tap actions, alerts, the screensaver (with a player's play and volume keys over its cover), and Tessera's screen settings.
+pages, hidden detail pages, custom tap actions, alerts, the doorbell, the screensaver (with a player's play and volume keys over its cover), and Tessera's screen settings.
 
 Not drawn yet: plugin tiles. Those tiles show their name, and their card says so.
 
@@ -134,7 +134,7 @@ Other limits:
 
 - Pictures need **Allow the device to perform Home Assistant actions**, since the screen asks for
   them with an event.
-- The tablet reports firmware 0.57.0, the version whose features it draws. Tessera may offer a newer firmware
+- The tablet reports firmware 0.58.0, the version whose features it draws. Tessera may offer a newer firmware
   update for the screen; ignore it, there is no ESP32 to flash, and Tessera stops at "no profile" anyway.
 - The tablet reports itself to Tessera as a `waveshare7b` (a 1024×600 board), so the editor's
   preview fits and Tessera sends it pictures. Change it under settings if you like.
@@ -142,6 +142,48 @@ Other limits:
 - **Deleting the screen from Home Assistant:** the tablet keeps its encryption key. To add it again,
   long-press the title, then **This screen → Tablet settings → Forget encryption key**. The settings also show the key, in case you
   add the screen by hand.
+
+## Live cameras
+
+A camera tile streams when its **Refresh** is set to **Live** in Tessera's editor (a refresh of 5 s or more keeps a still
+that comes again at that pace). A tablet streams **2** camera tiles at once by default; the others on the page show a
+still every 15 seconds. Change it under **Tablet settings → Live camera tiles at once** (0 to 8). The add-on allows eight
+streams across all screens together, and only cameras on the glass count: a camera on another page streams nothing.
+A camera opened full screen (a tap on its tile) streams too, at up to eight pictures a second.
+
+The pictures come as JPEG, about a tenth of the bytes they took before.
+
+## The doorbell
+
+Tessera's **Events** page has a wizard for a doorbell automation (it fires `esp_screens_doorbell` with the doorbell's
+camera). When it rings, the tablet wakes, comes to the front (from the widget page or another app too), plays a two-note
+chime on the notification volume and opens the camera live, full screen:
+
+- the first touch **answers** the ring, and Tessera closes it on the other screens; the ✕ closes it;
+- nobody touched it: it closes after the automation's timeout, and the top bar keeps the **missed ring** (the doorbell
+  icon and "2 min ago" in orange) until someone taps it, which opens the camera again;
+- with a lock or a door action in the automation, a **Door** key stands beside the picture: tap once ("Tap again to
+  open"), then again within five seconds. It shows the lock's state, and "Unlocking" until the lock answers.
+
+The tablet has no Talk or Sound key: the picture comes without the doorbell's sound.
+
+## Light presets
+
+Choose **Presets** (or **Brightness slider and presets** on a tile two rows high) under the light's controls in Tessera's
+editor. The tile shows up to four round keys, each a white shade or a colour with a brightness, a brightness alone, or
+an effect (its first two letters). The one the light shows now has a ring; one tapped shows a spinner until Home
+Assistant reports it. The light's card has them too, in a row, or in a column at its right on a wide screen.
+
+## Template tiles
+
+Add **Template** from the screen's own cards in Tessera's library and write Home Assistant templates with a little
+markup (`#` headings, `-` bullets, `**bold**`, `:good[...]`, `:alert[...]`, `:accent[...]`, tables). Home Assistant fills it
+in and the tile follows every change. A template that comes out empty hides the tile. A tap on it does nothing.
+
+## Calendar events
+
+A tap on an event in a calendar's full screen opens its sheet at once, and the tablet asks for the whole title, place and
+notes, which follow a moment later. (Tessera now sends events short, so a busy week fits.)
 
 ## Robot vacuums
 
@@ -157,6 +199,11 @@ A vacuum tile shows the keys the robot has: Play or Pause, Stop and Dock. A tap 
 - **Routines**: the robot's own (Roborock's from its app, an Ecovacs station's actions), one tap each.
 
 What the card has no room for gets a key that opens its own page; the round key at the top left goes back.
+
+On a tile two rows high (2×2 or larger), choose **Map**, **Rooms to pick**, **Routines** or **Map and rooms** under the
+tile's controls in Tessera's editor. The tile then shows the robot's state and battery at the top, that view in a frame,
+and the cleaning mode and its keys at the bottom. Tap rooms in the order you want them, then the play key, which shows
+how many it will clean. "+N" opens the card for the rest; a tap anywhere else opens the card too.
 
 ## The widget page, Android's apps and its launcher
 

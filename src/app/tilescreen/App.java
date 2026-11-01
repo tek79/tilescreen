@@ -154,6 +154,9 @@ public final class App extends Application {
     /** "auto", "landscape" or "portrait". */
     public String orientation() { return prefs.getString("orientation", "landscape"); }
 
+    /** How many camera tiles stream live at once on this tablet (Tessera's caps.live_tiles); 2 unless chosen. */
+    public int liveTiles() { return Math.max(0, Math.min(8, prefs.getInt("live_tiles", 2))); }
+
     /** Whether a swipe right from the first page opens the page of Android widgets. */
     public boolean widgetPage() { return prefs.getBoolean("widget_page", false); }
 
@@ -231,6 +234,7 @@ public final class App extends Application {
     }
 
     private synchronized void start() {
+        Tessera.liveTiles = liveTiles();
         Screen.Settings s = new Screen.Settings();
         s.node = node();
         s.friendly = friendly();

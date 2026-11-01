@@ -16,14 +16,20 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * follows the firmware of github.com/MaxGramser/homeassistant_espscreen.
  */
 public final class Tessera {
-    public static final String FIRMWARE = "0.57.0";
+    public static final String FIRMWARE = "0.58.0";
     static final int PROTOCOL = 2;
     public static final String READY = "Ready for tile configuration";
     static final int MAX_PAGES = 32, MAX_TILES = 1024, BAR_ITEMS = 16, WIRE_ITEMS = 6, MOST_PAYLOAD = 4096;
     static final int REFRESH_DEFAULT = 15, REFRESH_LEAST = 5, REFRESH_MOST = 3600;
     static final String[] FEATURES = {"climate_range", "bar_status", "weather_week", "media_rows", "media_library",
             "screensaver", "saver_items", "saver_photos", "clock_faces", "saver_keys",
-            "vacuum_card"};
+            "vacuum_card", "pictures", "live", "doorbell", "light_presets", "text_card", "calendar_detail", "vacuum_tile"};
+
+    /**
+     * How many camera tiles this screen streams at once (the hello's caps.live_tiles): the tablet's own setting. The add-on
+     * refuses one more, and every screen together gets eight streams at most (live_stream.MAX_STREAMS).
+     */
+    public static volatile int liveTiles = 2;
 
     // ----- the layout -----
 
@@ -31,6 +37,12 @@ public final class Tessera {
         public String kind = "", icon = "", text = "", color = "";
         public long epoch;
         public int weak;
+        /** A missed ring's item (`b`): a tap opens that ring again. Until when it stands (`x`, unix time), 0 for always. */
+        public boolean doorbell;
+        public long until;
+
+        /** Whether it still stands now: a missed ring kept for a while goes by the screen's own clock. */
+        public boolean standing() { return until == 0 || System.currentTimeMillis() / 1000 < until; }
 
         static BarItem from(Map<String, Object> m) {
             if (m == null) return null;
@@ -43,6 +55,10 @@ public final class Tessera {
             b.epoch = e == null ? 0 : e.longValue();
             Integer a = Json.integer(m, "a");
             b.weak = a == null ? 0 : a;
+            Integer bell = Json.integer(m, "b");
+            b.doorbell = b.kind.equals("ago") && bell != null && bell == 1;
+            Double x = Json.dbl(m, "x");
+            b.until = x == null || x < 0 ? 0 : x.longValue();
             return b;
         }
 
@@ -60,6 +76,8 @@ public final class Tessera {
             if (epoch != 0) m.put("e", (double) epoch);
             if (!color.isEmpty()) m.put("c", color);
             if (weak != 0) m.put("a", (double) weak);
+            if (doorbell) m.put("b", 1.0);
+            if (until != 0) m.put("x", (double) until);
             return m;
         }
     }
@@ -260,6 +278,30 @@ public final class Tessera {
         void changed();
     }
 
+    /**
+     * A ring (the op `doorbell`, docs/DOORBELL.md): an automation fired esp_screens_doorbell and the add-on names the
+     * doorbell's camera, its name, the ring's key, when it rang, how long it stays untouched, its door (1 a lock in state
+     * `doorState`, 2 an action), whether its view opens quiet and whether it chimes.
+     */
+    public static final class Ring {
+        public String camera = "", name = "", key = "", doorState = "", link = "";
+        public long rang;
+        public int timeout = 60, door;
+        public boolean quiet, chime = true;
+    }
+
+    public interface Doorbell {
+        void ring(Ring r);
+        /** Ring `key` was answered on another screen, or dismissed. */
+        void close(String key);
+        /** The new state of ring `key`'s lock. */
+        void doorState(String key, String state);
+    }
+
+    private volatile Doorbell doorbell;
+
+    public void setDoorbell(Doorbell d) { doorbell = d; }
+
     /** Fires a Home Assistant event, esphome.<name>. */
     public interface Teller {
         void tell(String event, Map<String, String> data);
@@ -424,11 +466,83 @@ public final class Tessera {
             return true;
         }
         if (op.equals("camera")) return answerPicture(m, status);
+        if (op.equals("doorbell")) return doorbell(m, status);
+        if (op.equals("calendar_event")) return calendarEvent(m, status);
         if (op.equals("options")) return answerOptions(m, status);
         if (op.equals("history")) return answerHistory(m, status);
         if (op.equals("browse")) return answerBrowse(m, status);
         return false;
     }
+
+    /** Whole events the app answered a tap on a short one with (op `calendar_event`), by "calendar:start:end". */
+    private final Map<String, String[]> calendarDetails = new LinkedHashMap<String, String[]>();
+
+    public synchronized String[] calendarDetail(String key) { return calendarDetails.get(key); }
+
+    /** A tap on a short calendar event asks for the rest (esphome.screen_calendar, calendar_feed.detail). */
+    public void askCalendarEvent(String entity, int index, int cal, int start, int end, String day) {
+        Map<String, String> data = new LinkedHashMap<String, String>();
+        data.put("entity", entity);
+        data.put("i", String.valueOf(index));
+        data.put("c", String.valueOf(cal));
+        data.put("s", String.valueOf(start));
+        data.put("e", String.valueOf(end));
+        data.put("day", day);
+        tell("screen_calendar", data);
+    }
+
+    private boolean calendarEvent(Map<String, Object> m, String[] status) {
+        Integer c = Json.integer(m, "c"), s = Json.integer(m, "s"), e = Json.integer(m, "e");
+        if (c == null || s == null || e == null) return false;
+        Integer gone = Json.integer(m, "x");
+        String[] found = gone != null && gone == 1 ? new String[]{"", "", ""}
+                : new String[]{cut(nz(Json.str(m, "t")), 120), cut(nz(Json.str(m, "p")), 96), cut(nz(Json.str(m, "n")), 480)};
+        synchronized (this) {
+            calendarDetails.put(c + ":" + s + ":" + e, found);
+            while (calendarDetails.size() > 32) calendarDetails.remove(calendarDetails.keySet().iterator().next());
+        }
+        fire();
+        status[0] = "Synced";
+        return true;
+    }
+
+    /** The op `doorbell` (page_receiver.cpp): a ring, its close (`c`), or its lock's new state (`ds` alone). */
+    private boolean doorbell(Map<String, Object> m, String[] status) {
+        String key = cut(nz(Json.str(m, "k")), 16);
+        if (key.isEmpty()) return false;
+        Doorbell d = doorbell;
+        Integer c = Json.integer(m, "c");
+        String camera = nz(Json.str(m, "e"));
+        if (c != null && c == 1) {
+            if (d != null) d.close(key);
+        } else if (camera.isEmpty() && Json.str(m, "ds") != null) {
+            if (d != null) d.doorState(key, cut(nz(Json.str(m, "ds")), 16));
+        } else {
+            if (!camera.startsWith("camera.") || camera.length() > 120) return false;
+            Ring r = new Ring();
+            r.camera = camera;
+            r.name = cut(nz(Json.str(m, "n")), 60);
+            if (r.name.isEmpty()) r.name = camera;
+            r.key = key;
+            Double rang = Json.dbl(m, "r");
+            r.rang = rang == null ? 0 : rang.longValue();
+            Integer t = Json.integer(m, "t");
+            r.timeout = Math.max(10, Math.min(600, t == null || t == 0 ? 60 : t));
+            Integer door = Json.integer(m, "d");
+            r.door = door == null || door < 0 || door > 2 ? 0 : door;
+            r.doorState = cut(nz(Json.str(m, "ds")), 16);
+            Integer quiet = Json.integer(m, "m"), nc = Json.integer(m, "nc");
+            r.quiet = quiet != null && quiet == 1;
+            r.chime = !(nc != null && nc == 1);
+            r.link = cut(nz(Json.str(m, "l")), 200);
+            log.log("doorbell: " + r.name + " rang (" + camera + ")");
+            if (d != null) d.ring(r);
+        }
+        status[0] = "Synced";
+        return true;
+    }
+
+    private static String cut(String s, int most) { return s.length() <= most ? s : s.substring(0, most); }
 
     private boolean begin(Map<String, Object> m, long revision, String[] status) {
         Integer tiles = Json.integer(m, "tiles"), pages = Json.integer(m, "pages"), home = Json.integer(m, "home"),
@@ -622,7 +736,8 @@ public final class Tessera {
             t.guard = nz(Json.str(o, "guard"));
             t.flow = nz(Json.str(o, "flow"));
             Integer refresh = Json.integer(o, "refresh");
-            if (refresh != null && refresh >= REFRESH_LEAST && refresh <= REFRESH_MOST) t.refresh = refresh;
+            // 0 is Live: the tile streams where the screen can (live_stream.live_pace).
+            if (refresh != null && (refresh == 0 || refresh >= REFRESH_LEAST && refresh <= REFRESH_MOST)) t.refresh = refresh;
             t.options = o;
             t.received = true;
             if (slot != null) {
@@ -716,6 +831,14 @@ public final class Tessera {
         }
         a.put("grids", grids);
         a.put("features", features);
+        // What this screen can do (firmware hw.h, page_delivery.caps_of): it streams live cameras, so many tiles at once.
+        Map<String, Object> caps = new LinkedHashMap<String, Object>();
+        caps.put("live", true);
+        caps.put("live_tiles", (double) Math.max(0, Math.min(8, liveTiles)));
+        // Template tiles (docs/TEXT_TILE.md, "Limits"): as many as a P4, and a P4's bytes of rows.
+        caps.put("text_tiles", 8.0);
+        caps.put("text_bytes", 3584.0);
+        a.put("caps", caps);
         a.put("tile_sizes", sizes);
         a.put("request", keyText(session.hello));
         a.put("session", keyText(session.lease));
@@ -757,6 +880,9 @@ public final class Tessera {
     }
 
     private final Map<String, Long> views = new HashMap<String, Long>();
+    /** Which kind each question was asked for, by its number, newest last. */
+    private final Map<Long, String> asked = new LinkedHashMap<Long, String>();
+    private long questions;
     private final Map<String, Picture> pictures = new HashMap<String, Picture>();
 
     /**
@@ -766,9 +892,12 @@ public final class Tessera {
     public void askPicture(String kind, Map<String, String> fields) {
         long view;
         synchronized (this) {
-            Long v = views.get(kind);
-            view = v == null ? 1 : v + 1;
+            // One counter for every question, so an answer's number names the question it answers, whatever its kind
+            // (a tile's own picture is "live:<index>" here and "live" on the wire).
+            view = ++questions;
             views.put(kind, view);
+            asked.put(view, kind);
+            if (asked.size() > 64) asked.remove(asked.keySet().iterator().next());
             pictures.remove(kind);
         }
         Map<String, String> data = new LinkedHashMap<String, String>();
@@ -785,6 +914,28 @@ public final class Tessera {
         return p != null && p.url.isEmpty();
     }
 
+    /**
+     * Asks the add-on a question for a picture in its new shape (docs/PICTURES.md, "The question", the feature `pictures`):
+     * `q` its compact JSON, with the question's number `n`. The answer comes as camera `t` "q" with that number, and is kept
+     * under `kind` as every picture is.
+     */
+    public void askQuestion(String kind, Map<String, Object> q) {
+        long number;
+        synchronized (this) {
+            number = ++questions;
+            views.put(kind, number);
+            asked.put(number, kind);
+            if (asked.size() > 64) asked.remove(asked.keySet().iterator().next());
+            pictures.remove(kind);
+        }
+        Map<String, String> data = new LinkedHashMap<String, String>();
+        data.put("n", Long.toString(number));
+        data.put("view", Long.toString(number));
+        data.put("q", Json.write(q));
+        log.log("pictures: asked Tessera for " + kind + " (" + Json.str(q, "o") + " " + q.get("src") + "), question " + number);
+        tell("screen_camera", data);
+    }
+
     public synchronized Picture picture(String kind) {
         Picture p = pictures.get(kind);
         return p == null || p.url.isEmpty() ? null : p;
@@ -793,22 +944,47 @@ public final class Tessera {
     private boolean answerPicture(Map<String, Object> m, String[] status) {
         String kind = nz(Json.str(m, "t")), e = nz(Json.str(m, "e")), url = nz(Json.str(m, "u"));
         if (kind.length() > 8) kind = kind.substring(0, 8);
+        // The answer to a question in the new shape: `t` "q" and the question's number `n`.
+        if (kind.equals("q")) {
+            Double n = Json.dbl(m, "n");
+            String of = n == null ? null : asked.get(n.longValue());
+            if (of == null) {
+                status[0] = "Synced";
+                return true;
+            }
+            if (url.length() > 240 || (!url.isEmpty() && !url.startsWith("http://"))) return false;
+            Long latest = views.get(of);
+            status[0] = "Synced";
+            if (latest == null || latest != n.longValue()) {
+                log.log("pictures: Tessera answered an older question for " + of + "; waiting for the newest");
+                return true;
+            }
+            log.log(url.isEmpty() ? "pictures: Tessera has no picture for " + of + " right now"
+                    : "pictures: Tessera's link for " + of + ": " + url);
+            pictures.put(of, new Picture(e, url, latest));
+            return true;
+        }
         if (!(kind.equals("live") || kind.equals("full") || kind.equals("cover") || kind.equals("saver")
                 || kind.equals("alert") || kind.equals("lib") || kind.equals("vmap"))) {
             return false;
         }
         if (e.length() > 400 || url.length() > 240 || (!url.isEmpty() && !url.startsWith("http://"))) return false;
         Double view = Json.dbl(m, "view");
-        Long asked = views.get(kind);
         status[0] = "Synced";
+        // The answer finds its question by its number: a tile's own picture comes as "live" for "live:<index>".
+        if (view != null && kind.equals("live")) {
+            String of = asked.get(view.longValue());
+            if (of != null && of.startsWith("live:")) kind = of;
+        }
+        Long latest = views.get(kind);
         // An answer to an older request, or one without its number, changes nothing.
-        if (asked == null || view == null || view.longValue() != asked) {
+        if (latest == null || view == null || view.longValue() != latest) {
             log.log("pictures: Tessera answered an older " + kind + " request; waiting for the newest");
             return true;
         }
         log.log(url.isEmpty() ? "pictures: Tessera has no " + kind + " picture of " + e + " right now"
                 : "pictures: Tessera's link for " + kind + ": " + url);
-        pictures.put(kind, new Picture(e, url, asked));
+        pictures.put(kind, new Picture(e, url, latest));
         return true;
     }
 

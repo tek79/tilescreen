@@ -70,7 +70,19 @@ final class CalendarCard {
         final List<Ev> events = new ArrayList<Ev>();
         String notes = "", bookOn = "", bookPlace = "", bookTitle = "";
         int[] glance = new int[0];
+        /** Events come short (`a`, calendar_detail): a tap asks the app for the whole title, place and notes. */
+        boolean compact;
+
+        /** The day the screen calls today, as the app reads it in a question: 2026-10-31. */
+        String today() { return String.format(java.util.Locale.ROOT, "%04d-%02d-%02d", year, month, day); }
     }
+
+    /** Asks the app for the rest of a short event (esphome.screen_calendar). */
+    interface Asker { void ask(int cal, int start, int end, String day); }
+
+    Asker asker;
+    /** The whole title, place and notes of events the app answered for, by "calendar:start:end"; null values for gone. */
+    java.util.Map<String, String[]> details = new java.util.HashMap<String, String[]>();
 
     static Data parse(Map<String, Object> x) {
         Map<String, Object> c = x == null ? null : Json.obj(x.get("cal"));
@@ -115,6 +127,8 @@ final class CalendarCard {
         d.leftOut = m == null ? 0 : Math.max(0, m);
         String n = Json.str(c, "n");
         d.notes = n == null ? "" : n;
+        Integer a = Json.integer(c, "a");
+        d.compact = a != null && a == 1;
         List<Object> g = Json.arr(c.get("g"));
         if (g != null && g.size() >= 2) {
             d.glanceFrom = Math.max(-62, Math.min(0, num(g.get(0))));
@@ -719,7 +733,10 @@ final class CalendarCard {
         EventTaps taps = new EventTaps() {
             public void event(final RectF r, final Ev e) {
                 hits.tap(r, new Runnable() {
-                    public void run() { sheet = e; }
+                    public void run() {
+                        sheet = e;
+                        if (all.compact && asker != null && (e.flags & PRIVATE) == 0) asker.ask(e.cal, e.s, e.e, all.today());
+                    }
                 });
             }
         };
@@ -980,14 +997,22 @@ final class CalendarCard {
         float pad = 4 * u, x = r.left + pad, tw = r.width() - pad * 2, y = r.top + pad + fs * 1.2f;
         int col = color(d, e.cal);
         box(c, x, y - fs * 1.0f, x + Math.max(4, fs * 0.3f), y + fs * 0.2f, col, 2);
-        words(c, fit(title(e), tw - fs, fs * 1.3f, medium), x + fs * 0.7f, y, fs * 1.3f, Style.TEXT, medium, Paint.Align.LEFT);
+        // A short event's whole title, place and notes, once the app answered (calendar_detail).
+        String[] more = d.compact ? details.get(e.cal + ":" + e.s + ":" + e.e) : null;
+        String whole = more != null && !more[0].isEmpty() && (e.flags & PRIVATE) == 0 ? more[0] : title(e);
+        List<String> titleLines = wrapIn(whole, tw - fs, fs * 1.3f, medium);
+        for (int i = 0; i < Math.min(2, titleLines.size()); i++) {
+            String line = i == 1 && titleLines.size() > 2 ? fit(titleLines.get(1) + " " + titleLines.get(2), tw - fs, fs * 1.3f, medium) : titleLines.get(i);
+            words(c, line, x + fs * 0.7f, y, fs * 1.3f, Style.TEXT, medium, Paint.Align.LEFT);
+            if (i == 0 && titleLines.size() > 1) y += fs * 1.55f;
+        }
         y += fs * 1.8f;
         String calName = e.cal < d.names.size() ? d.names.get(e.cal) : "";
         String[][] rows = {
                 {"calendar", calName},
                 {"calendar-today", longDay(d, dayOf(e.s))},
                 {"clock-outline", when(d, e, o.h24) + (e.allDay() ? "" : " · " + duration(e.e - e.s))},
-                {"map-marker-outline", (e.flags & PRIVATE) != 0 ? "" : e.place}};
+                {"map-marker-outline", (e.flags & PRIVATE) != 0 ? "" : more != null && !more[1].isEmpty() ? more[1] : e.place}};
         for (String[] row : rows) {
             if (row[1] == null || row[1].isEmpty()) continue;
             glyphs.setColor(Style.DIM);
@@ -996,17 +1021,37 @@ final class CalendarCard {
             words(c, fit(row[1], tw - fs * 2, fs * 0.95f, regular), x + fs * 1.6f, y, fs * 0.95f, Style.TEXT, regular, Paint.Align.LEFT);
             y += fs * 1.6f;
         }
-        // The notes travel for the event of the moment, or the next one.
+        // The notes travel for the event of the moment, or the next one; a short event's come with its answer.
         int now = now(d), focus = running(d, now);
         if (focus < 0) focus = next(d, now);
-        if (focus >= 0 && d.events.get(focus) == e && !d.notes.isEmpty()) {
+        String notes = more != null && !more[2].isEmpty() ? more[2] : focus >= 0 && d.events.get(focus) == e ? d.notes : "";
+        if (!notes.isEmpty()) {
             y += fs * 0.3f;
-            for (String line : wrap(d.notes, tw, fs * 0.85f)) {
+            for (String line : wrap(notes, tw, fs * 0.85f)) {
                 if (y > r.bottom - pad) break;
                 words(c, line, x, y, fs * 0.85f, Style.DIM, regular, Paint.Align.LEFT);
                 y += fs * 1.2f;
             }
         }
+    }
+
+    private List<String> wrapIn(String s, float w, float size, android.graphics.Typeface face) {
+        List<String> out = new ArrayList<String>();
+        text.setTypeface(face);
+        text.setTextSize(size);
+        String line = "";
+        for (String word : s.replace('\n', ' ').split(" ")) {
+            String next = line.isEmpty() ? word : line + " " + word;
+            if (text.measureText(next) > w && !line.isEmpty()) {
+                out.add(line);
+                line = word;
+            } else {
+                line = next;
+            }
+        }
+        if (!line.isEmpty()) out.add(line);
+        if (out.isEmpty()) out.add("");
+        return out;
     }
 
     private List<String> wrap(String s, float w, float size) {

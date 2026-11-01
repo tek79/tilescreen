@@ -97,8 +97,6 @@ public final class TileView extends View {
         public void redraw() { changed(); }
     });
     /** Where each tile's picture sits in the page's picture, by tile index, for the request that is out. */
-    private Map<Integer, Rect> liveFrames = new HashMap<Integer, Rect>();
-    private Bitmap livePicture;
 
     private Tessera.Layout layout;
     private int page = -1;
@@ -150,6 +148,8 @@ public final class TileView extends View {
     public void showAlert(final Screen.Alert a) {
         ui.post(new Runnable() {
             public void run() {
+                // A new alert closes a ring's view, as on a Tessera screen.
+                if (ring != null) finishRing("closed");
                 if (alert != null) app.screen().alertEnded(alert, "replaced");
                 alert = a;
                 if (alertTimeout != null) ui.removeCallbacks(alertTimeout);
@@ -210,7 +210,7 @@ public final class TileView extends View {
     private final Runnable tick = new Runnable() {
         public void run() {
             // Back to page 1 (core.yaml back_to_page_1_when_due): away from home, or a card open, long enough.
-            if (layout != null && (cardTile >= 0 || page != layout.home) && alert == null
+            if (layout != null && (cardTile >= 0 || page != layout.home) && alert == null && ring == null
                     && app.screen().screenSettings.homeDue()) {
                 home(true);
             }
@@ -289,6 +289,7 @@ public final class TileView extends View {
         }
         if (calendarOpen >= 0) drawCalendarFull(c, w, h);
         if (settingsOpen) drawSettings(c, w, h);
+        if (ring != null) drawRing(c, w, h);
         if (alert != null) drawAlert(c, w, h);
         if (banner != null && SystemClock.uptimeMillis() < bannerUntil) drawBanner(c, w, h);
     }
@@ -410,75 +411,109 @@ public final class TileView extends View {
     }
 
     /** One picture for every pictured tile of the page, each in its own place, asked for when the page changes. */
+    /**
+     * The pictures of a page's tiles (tile_picture.h, GitHub #183): each tile asks for its own, painted for exactly its
+     * place, at its own pace, and keeps it under its own key. A new track replaces one cover and nothing else, a camera
+     * refreshes at the pace its own tile chose, and no answer can land in another tile's place. The question is the one
+     * a page has always been asked with, for a page of one tile: an atlas of one frame at the top left.
+     */
     private void livePictures(Screen screen, List<Integer> shown, List<RectF> rects, int w, int h) {
-        StringBuilder entities = new StringBuilder(), idx = new StringBuilder(), grounds = new StringBuilder(),
-                atlas = new StringBuilder("["), wish = new StringBuilder(w + "x" + h);
-        Map<Integer, Rect> frames = new HashMap<Integer, Rect>();
-        int every = 0;
         float radius = 2.4f * u;
+        final Tessera tessera = screen.tessera;
+        Map<Integer, Bitmap> now = new HashMap<Integer, Bitmap>();
+        boolean waiting = false;
+        // The first camera tiles set to Live stream, as many as this tablet streams at once (caps.live_tiles); the rest
+        // keep a still that comes again at their pace, as a Tessera screen's do (picture_engine::limits().streams).
+        int streams = 0, most = Tessera.liveTiles;
         for (int k = 0; k < shown.size(); k++) {
-            Tessera.Tile t = layout.tiles.get(shown.get(k));
+            final int index = shown.get(k);
+            Tessera.Tile t = layout.tiles.get(index);
             if (!pictured(t)) continue;
             RectF r = rects.get(k);
-            int x = (int) Math.ceil(r.left), y = (int) Math.ceil(r.top);
-            int fw = Math.min(w, (int) Math.floor(r.right)) - x, fh = Math.min(h, (int) Math.floor(r.bottom)) - y;
-            if (fw < 1 || fh < 1) continue;
-            int rad = Math.min((int) radius, Math.min(fw, fh) / 2), shade = "cover".equals(t.display) ? 170 : 0;
-            if (frames.size() > 0) {
-                entities.append(',');
-                idx.append(',');
-                grounds.append(',');
-                atlas.append(',');
-            }
-            entities.append(t.entity);
-            idx.append(shown.get(k));
-            int bg = Style.pastel(t.background);
-            grounds.append(String.format(Locale.US, "%06x", Style.BG & 0xFFFFFF));
-            atlas.append('[').append(x).append(',').append(y).append(',').append(fw).append(',').append(fh).append(',')
-                    .append(rad).append(',').append(shade).append(']');
-            frames.put(shown.get(k), new Rect(x, y, x + fw, y + fh));
-            if ("live".equals(t.display) && (every == 0 || t.refresh < every)) every = t.refresh;
-            wish.append('|').append(t.entity).append(':').append(x).append(',').append(y).append(',').append(fw)
-                    .append(',').append(fh).append(':').append(mark(t));
+            final int fw = Math.max(1, Math.round(r.width())), fh = Math.max(1, Math.round(r.height()));
+            final int rad = Math.min((int) radius, Math.min(fw, fh) / 2), shade = "cover".equals(t.display) ? 170 : 0;
+            final String ground = String.format(Locale.US, "%06X", Style.BG & 0xFFFFFF);
+            final String entity = t.entity;
+            boolean camera = "live".equals(t.display) && (t.domain().equals("camera") || t.domain().equals("image"));
+            final boolean live = camera && t.domain().equals("camera") && t.refresh == 0 && fw >= 64 && fh >= 64 && streams < most;
+            if (live) streams++;
+            // A camera's still comes again at its tile's pace (Live over the streams' count: Tessera's 15 s).
+            final long pace = !camera ? 0 : (t.refresh > 0 ? t.refresh : 15) * 1000L;
+            String kind = "live:" + index;
+            // What makes it another picture: the tile, its place, the track or choice it shows, the look, streaming or not.
+            pictures.want(kind, entity + "|" + fw + "x" + fh + "|" + mark(t) + "|" + ground + "|" + live);
+            pictures.pace(kind, 5);
+            Bitmap b = pictures.keepFresh(tessera, kind, null, pace > 0 ? pace : 3600000L, new Runnable() {
+                public void run() {
+                    Map<String, Object> q = question("tile", index, entity, "tile:" + index, fw, fh, rad, shade, "cover", ground);
+                    if (pace > 0) q.put("pace", (double) pace);
+                    if (live) q.put("live", numbers(fw, fh));
+                    tessera.askQuestion("live:" + index, q);
+                }
+            });
+            if (b != null) now.put(index, b);
+            else waiting = true;
         }
-        atlas.append(']');
-        wish.append('|').append(grounds);
-        if (frames.isEmpty()) {
-            livePicture = null;
-            liveFrames = frames;
-            return;
-        }
-        // The page's one picture holds every tile's part; the last one stays while the next comes only where the parts
-        // stand where they stood (a new cover, a camera's next picture), never over another page's tiles.
-        if (pictures.want("live", wish.toString(), frames.equals(liveFrames))) liveFrames = frames;
-        final Map<String, String> fields = new LinkedHashMap<String, String>();
-        fields.put("tiles", entities.toString());
-        fields.put("idx", idx.toString());
-        fields.put("size", "160");
-        fields.put("bg", grounds.toString());
-        fields.put("dark", "1");
-        fields.put("atlas", atlas.toString());
-        final Tessera tessera = screen.tessera;
-        livePicture = pictures.keepFresh(tessera, "live", null, every > 0 ? every * 1000L : 3600000L, new Runnable() {
-            public void run() { tessera.askPicture("live", fields); }
-        });
+        tilePictures = now;
         ui.postDelayed(new Runnable() {
             public void run() { invalidate(); }
-        }, 1000);
+        }, waiting ? 500 : 1000);
     }
 
-    /** Draws a tile's part of the page's picture over its card; false while there is none yet. */
+    /**
+     * A picture question (docs/PICTURES.md, "The question"): who asks, its source, the picture's size with one place over
+     * all of it, how it fills, the colour behind its corners, the look, and the formats this tablet decodes, JPEG first.
+     */
+    static Map<String, Object> question(String owner, int index, String of, String source, int w, int h, int radius, int shade,
+                                        String fit, String ground) {
+        Map<String, Object> q = new LinkedHashMap<String, Object>();
+        q.put("o", owner);
+        if (owner.equals("tile")) q.put("i", (double) index);
+        if (of != null && !of.isEmpty()) q.put("for", of);
+        List<Object> src = new ArrayList<Object>();
+        src.add(source);
+        q.put("src", src);
+        w = Math.max(1, Math.min(2048, w));
+        h = Math.max(1, Math.min(2048, h));
+        q.put("box", numbers(w, h));
+        List<Object> at = new ArrayList<Object>();
+        List<Object> place = new ArrayList<Object>();
+        for (int n : new int[]{0, 0, w, h, Math.min(radius, Math.min(w, h) / 2), shade}) place.add((double) n);
+        at.add(place);
+        q.put("at", at);
+        List<Object> fits = new ArrayList<Object>(), grounds = new ArrayList<Object>(), formats = new ArrayList<Object>();
+        fits.add(fit);
+        grounds.add(ground);
+        q.put("fit", fits);
+        q.put("bg", grounds);
+        q.put("look", Style.isDark() ? "d" : "l");
+        formats.add("jpeg");
+        formats.add("bmp24");
+        q.put("fmt", formats);
+        return q;
+    }
+
+    private static List<Object> numbers(int a, int b) {
+        List<Object> out = new ArrayList<Object>();
+        out.add((double) a);
+        out.add((double) b);
+        return out;
+    }
+
+    /** Each pictured tile's own picture on the page shown now. */
+    private Map<Integer, Bitmap> tilePictures = new HashMap<Integer, Bitmap>();
+
+    /** Draws a tile's own picture over its card; false while there is none yet. */
     private boolean drawLive(Canvas c, int index, RectF r) {
-        Bitmap b = livePicture;
-        Rect f = liveFrames.get(index);
-        if (b == null || f == null || f.right > b.getWidth() || f.bottom > b.getHeight()) return false;
+        Bitmap b = tilePictures.get(index);
+        if (b == null) return false;
         // The card's own round corners, whatever colour the picture's corners came in.
         float radius = 2.4f * u;
         Path round = new Path();
         round.addRoundRect(new RectF(r), radius, radius, Path.Direction.CW);
         c.save();
         c.clipPath(round);
-        c.drawBitmap(b, f, r, null);
+        c.drawBitmap(b, new Rect(0, 0, b.getWidth(), b.getHeight()), r, null);
         c.restore();
         return true;
     }
@@ -539,7 +574,18 @@ public final class TileView extends View {
         text.setTextAlign(Paint.Align.RIGHT);
         List<Tessera.BarItem> items = new ArrayList<Tessera.BarItem>(p.bar);
         for (int i = items.size() - 1; i >= 0; i--) {
-            right = drawBarItem(c, items.get(i), right, mid) - 2.6f * u;
+            Tessera.BarItem it = items.get(i);
+            if (!it.standing()) continue;
+            float was = right;
+            right = drawBarItem(c, it, right, mid) - 2.6f * u;
+            if (it.doorbell) {
+                // A missed ring: a tap opens it again (header_bar's DOORBELL_CARD).
+                Hit h = new Hit(new RectF(right, 0, was + 1.3f * u, height));
+                h.tap = new Runnable() {
+                    public void run() { reopenRing(); }
+                };
+                hits.add(h);
+            }
             if (right < w * 0.5f) break;
         }
         if (screen.device.clients() == 0 || (screen.tessera.shown() && !screen.tessera.fresh())) {
@@ -627,6 +673,7 @@ public final class TileView extends View {
         } else if (k.equals("ago")) {
             long mins = Math.max(0, (System.currentTimeMillis() / 1000 - it.epoch) / 60);
             words = mins < 1 ? "now" : mins < 60 ? mins + " min" : mins < 1440 ? (mins / 60) + " h" : (mins / 1440) + " d";
+            if (it.doorbell) words = mins < 1 ? "Just now" : words + " ago";
             if (!it.text.isEmpty()) words = it.text + " " + words;
         } else if (k.equals("wifi")) {
             icon = Icons.named(getContext(), app.ip().isEmpty() ? "wifi-off" : "wifi");
@@ -638,7 +685,7 @@ public final class TileView extends View {
             icon = Icons.named(getContext(), level >= 90 ? "battery" : level >= 50 ? "battery-60" : level >= 20 ? "battery-30" : "battery-alert");
             words = level >= 0 ? level + "%" : null;
         }
-        int color = it.color.isEmpty() ? Style.TEXT : Style.named(it.color, Style.TEXT);
+        int color = it.color.isEmpty() ? (it.doorbell ? Style.ORANGE : Style.TEXT) : Style.named(it.color, Style.TEXT);
         if (it.weak != 0) color = Style.DIM;
         text.setColor(color);
         if (words != null && !words.isEmpty()) {
@@ -730,10 +777,21 @@ public final class TileView extends View {
         return copy;
     }
 
+    private TextCard textCard;
+
+    private TextCard textCard() {
+        if (textCard == null) textCard = new TextCard(regular, medium);
+        return textCard;
+    }
+
     private void drawTile(Canvas c, final int index, final Tessera.Tile t, RectF r, Cell cell, float base) {
         String bgName = t.background;
         int pastel = Style.pastel(bgName);
         boolean card = !"none".equals(bgName);
+        // The template tile (docs/TEXT_TILE.md): rows Home Assistant rendered; none hides the card, ground and all.
+        String[] textError = {null};
+        List<TextCard.Row> textRows = t.entity.equals("screen.text") ? TextCard.rows(t.extra, textError) : null;
+        if (t.entity.equals("screen.text") && (textRows == null || textRows.isEmpty() && textError[0] == null)) return;
         boolean on = Style.active(t), dead = Style.unavailable(t);
         int accent = Style.accent(t);
         int fg = pastel != 0 ? Style.DARK_TEXT : Style.TEXT, dim = pastel != 0 ? Style.DARK_DIM : Style.DIM;
@@ -778,6 +836,21 @@ public final class TileView extends View {
             dim = 0xFFD0D4DC;
         }
 
+        if (textRows != null) {
+            hit.tap = hit.hold = null;  // a tap on the tile does nothing
+            float tfs = Math.max(11, Math.min(base / 9.5f, 3.9f * u));
+            textCard().draw(c, textRows, textError[0], new RectF(r.left + pad, r.top + pad * 0.8f, r.right - pad, r.bottom - pad * 0.6f),
+                    tfs, fg, dim);
+            return;
+        }
+        if (t.domain().equals("vacuum") && VacuumTile.face(t.controls) && cell.rows >= 2 && r.height() > 40 * u) {
+            hit.tap = hit.hold = new Runnable() {
+                public void run() { cardTile = index; }
+            };
+            drawVacuumTile(c, index, t, new RectF(r.left + pad, r.top + pad * 0.8f, r.right - pad, r.bottom - pad * 0.8f), fs,
+                    fg, dim, pastel != 0 ? 0x22000000 : Style.RAISED);
+            return;
+        }
         if (e.equals("screen.clock")) {
             ClockTile.Card k = new ClockTile.Card();
             k.box = new RectF(r.left + pad, r.top + pad, r.right - pad, r.bottom - pad);
@@ -1179,6 +1252,19 @@ public final class TileView extends View {
             calendarOpen = -1;
             return;
         }
+        final Tessera.Tile calTile = layout.tiles.get(calendarOpen);
+        final int calIndex = calendarOpen;
+        final Tessera tessera = app.screen().tessera;
+        calendar().asker = new CalendarCard.Asker() {
+            public void ask(int cal, int start, int end, String day) {
+                if (tessera.calendarDetail(cal + ":" + start + ":" + end) == null)
+                    tessera.askCalendarEvent(calTile.entity, calIndex, cal, start, end, day);
+            }
+        };
+        calendar().details = new java.util.AbstractMap<String, String[]>() {
+            public String[] get(Object key) { return tessera.calendarDetail(String.valueOf(key)); }
+            public java.util.Set<Map.Entry<String, String[]>> entrySet() { return java.util.Collections.emptySet(); }
+        };
         calendar().drawFull(c, layout.tiles.get(calendarOpen), w, h, u, layout.clock24, new CalendarCard.FullHost() {
             public void close() { calendarOpen = -1; }
         }, new CalendarCard.Hits() {
@@ -1248,6 +1334,12 @@ public final class TileView extends View {
             return "slider".equals(t.inline) && hasLevel(t) ? new String[]{"slider"} : null;
         }
         if (ctl.equals("toggle")) return new String[]{"toggle"};
+        // A light's presets (docs/LIGHT_PRESETS.md): the keys, or the slider with the keys under it on two rows.
+        if (d.equals("light") && ctl.equals("presets")) return LightPresets.of(t).isEmpty() ? new String[]{"slider"} : new String[]{"presets"};
+        if (d.equals("light") && ctl.equals("brightness_presets")) {
+            if (LightPresets.of(t).isEmpty()) return new String[]{"slider"};
+            return tall ? new String[]{"slider", "presets"} : new String[]{"presets"};
+        }
         if (ctl.equals("run")) return new String[]{"run"};
         if (ctl.equals("brightness") || ctl.equals("speed") || ctl.equals("position") || ctl.equals("slider")) return new String[]{"slider"};
         if (d.equals("cover")) {
@@ -1268,6 +1360,8 @@ public final class TileView extends View {
         }
         if (ctl.equals("stepper")) return d.endsWith("select") ? new String[]{"select"} : new String[]{"stepper"};
         if (ctl.equals("buttons") && (d.equals("timer") || d.equals("vacuum"))) return new String[]{d};
+        // A robot's larger tile on one row (or a screen too small for it): its keys.
+        if (d.equals("vacuum") && VacuumTile.face(ctl)) return new String[]{"vacuum"};
         return null;
     }
 
@@ -1370,6 +1464,10 @@ public final class TileView extends View {
     private void drawControl(Canvas c, final Tessera.Tile t, String kind, RectF band, float fs, int accent, boolean pastel) {
         String d = t.domain();
         int raised = pastel ? 0x22000000 : Style.RAISED, ink = pastel ? Style.DARK_TEXT : Style.TEXT;
+        if (kind.equals("presets")) {
+            drawPresets(c, t, band, pastel);
+            return;
+        }
         if (kind.equals("slider") || kind.equals("tilt") || kind.equals("volume")) {
             final Slider s = new Slider();
             s.track = band;
@@ -1996,6 +2094,60 @@ public final class TileView extends View {
         hits.add(hit);
     }
 
+    private final Map<Integer, VacuumTile> vacuumTiles = new HashMap<Integer, VacuumTile>();
+    private final Map<Integer, Boolean> vacuumTileMissing = new HashMap<Integer, Boolean>();
+
+    /** A robot's larger tile (VacuumTile): its map asked for as the source vacuum:<entity> at the map's exact size. */
+    private void drawVacuumTile(Canvas c, final int index, final Tessera.Tile t, RectF box, float fs, int fg, int dim, int raised) {
+        VacuumTile vt = vacuumTiles.get(index);
+        if (vt == null) {
+            vt = new VacuumTile(getContext(), glyphs);
+            vacuumTiles.put(index, vt);
+        }
+        final Tessera tessera = app.screen().tessera;
+        vt.draw(c, t, box, u, fs, mm(), fg, dim, raised, new VacuumTile.Host() {
+            public void tap(RectF rr, Runnable run) {
+                Hit hit = new Hit(new RectF(rr));
+                hit.tap = run;
+                hits.add(hit);
+            }
+
+            public void call(String service, Map<String, String> data, Map<String, String> templates) {
+                if (!app.screen().perform(service, data, templates)) noActions();
+                invalidate();
+            }
+
+            public void openCard() { cardTile = index; }
+
+            public Bitmap map(String mapEntity, String mark, final int w, final int h, final int bg, final boolean dark) {
+                final String kind = "vtile:" + index;
+                final String entity = t.entity;
+                final String ground = String.format(Locale.US, "%06X", bg & 0xFFFFFF);
+                if (pictures.want(kind, entity + "|" + mark + "|" + w + "x" + h + "|" + ground + "|" + dark)) vacuumTileMissing.remove(index);
+                Bitmap b = pictures.keepFresh(tessera, kind, null, 3600000L, new Runnable() {
+                    public void run() {
+                        Map<String, Object> q = question("tile", index, entity, "vacuum:" + entity, w, h, 0, 0, "contain", ground);
+                        // A map's lines and words stay sharp as BMP (docs/PICTURES.md).
+                        List<Object> formats = new ArrayList<Object>();
+                        formats.add("bmp24");
+                        q.put("fmt", formats);
+                        tessera.askQuestion(kind, q);
+                    }
+                });
+                boolean missing = b == null && tessera.answeredEmpty(kind);
+                vacuumTileMissing.put(index, missing);
+                if (b == null && !missing) {
+                    ui.postDelayed(new Runnable() {
+                        public void run() { invalidate(); }
+                    }, 150);
+                }
+                return b;
+            }
+
+            public boolean mapMissing() { return Boolean.TRUE.equals(vacuumTileMissing.get(index)); }
+        });
+    }
+
     private void drawVacuum(Canvas c, final Tessera.Tile t, RectF body) {
         final Tessera tessera = app.screen().tessera;
         vacuum().draw(c, t, body, u, new VacuumCard.Host() {
@@ -2038,6 +2190,93 @@ public final class TileView extends View {
 
             public boolean mapMissing() { return vacuumMapMissing; }
         });
+    }
+
+    // ----- a light's presets (module_light_presets.h) -----
+
+    /** A tapped preset on its way: the light and the preset's place, until Home Assistant reports it (or six seconds). */
+    private final Map<String, long[]> presetSent = new HashMap<String, long[]>();
+
+    private void drawPresets(Canvas c, final Tessera.Tile t, RectF band, boolean pastel) {
+        final List<LightPresets.Preset> presets = LightPresets.of(t);
+        if (presets.isEmpty()) return;
+        boolean down = band.height() > band.width() * 1.5f;
+        float d = down ? band.width() : band.height(), gap = d * 0.35f;
+        int fit = Math.max(1, (int) (((down ? band.height() : band.width()) + gap) / (d + gap)));
+        int n = Math.min(fit, presets.size());
+        long now = SystemClock.uptimeMillis();
+        long[] sent = presetSent.get(t.entity);
+        if (sent != null && (now > sent[1] || sent[0] < presets.size() && LightPresets.shows(t, presets.get((int) sent[0])))) {
+            presetSent.remove(t.entity);
+            sent = null;
+        }
+        boolean levels = LightPresets.levels(t);
+        int ink = pastel ? Style.DARK_TEXT : Style.TEXT;
+        float x = down ? band.top : band.left;
+        for (int i = 0; i < n; i++) {
+            final int index = i;
+            LightPresets.Preset p = presets.get(i);
+            float cx = down ? band.centerX() : x + d / 2, cy = down ? x + d / 2 : band.centerY(), rad = d / 2 - d * 0.1f;
+            int colour = LightPresets.colour(p);
+            int disc = colour != 0 ? colour : pastel ? 0x22000000 : Style.RAISED;
+            fill.setColor(disc);
+            c.drawCircle(cx, cy, rad, fill);
+            if (colour != 0 && LightPresets.luminance(colour) > 0.8) {
+                // A hairline round a key nearly white, so it stands off a light card.
+                line.setColor(withAlpha(ink, 60));
+                line.setStrokeWidth(Math.max(1, d * 0.02f));
+                c.drawCircle(cx, cy, rad, line);
+            }
+            int keyInk = colour != 0 ? (LightPresets.luminance(colour) > 0.35 ? 0xFF1E2430 : 0xFFFFFFFF) : ink;
+            String word = p.named() ? p.letters() : colour == 0 || levels ? p.b + "%" : null;
+            if (word != null) {
+                text.setTypeface(p.named() ? medium : regular);
+                text.setTextAlign(Paint.Align.CENTER);
+                text.setTextSize(rad * (p.named() ? 0.7f : 0.55f));
+                text.setColor(colour != 0 && levels ? withAlpha(keyInk, 190) : keyInk);
+                c.drawText(word, cx, cy + rad * 0.2f, text);
+                text.setTextAlign(Paint.Align.LEFT);
+            }
+            boolean pending = sent != null && sent[0] == i;
+            line.setColor(ink);
+            line.setStrokeWidth(Math.max(1.5f, d * 0.05f));
+            RectF ring = new RectF(cx - d / 2 + d * 0.02f, cy - d / 2 + d * 0.02f, cx + d / 2 - d * 0.02f, cy + d / 2 - d * 0.02f);
+            if (pending) {
+                // On its way: a spinner where its ring will be.
+                c.drawArc(ring, (now / 3) % 360, 100, false, line);
+            } else if (sent == null && LightPresets.shows(t, p)) {
+                c.drawCircle(cx, cy, ring.width() / 2, line);
+            }
+            Hit h = new Hit(down ? new RectF(band.left, x - gap / 2, band.right, x + d + gap / 2)
+                    : new RectF(x - gap / 2, band.top, x + d + gap / 2, band.bottom));
+            h.tap = new Runnable() {
+                public void run() { sendPreset(t, presets.get(index), index); }
+            };
+            hits.add(h);
+            x += d + gap;
+        }
+        if (sent != null) {
+            ui.postDelayed(new Runnable() {
+                public void run() { invalidate(); }
+            }, 60);
+        }
+    }
+
+    private void sendPreset(Tessera.Tile t, LightPresets.Preset p, int index) {
+        long now = SystemClock.uptimeMillis();
+        long[] sent = presetSent.get(t.entity);
+        // A preset is several wishes at once: the other keys wait for this one.
+        if (sent != null && now < sent[1]) return;
+        boolean ok = true;
+        for (LightPresets.Call call : LightPresets.calls(t, p)) {
+            ok &= app.screen().perform(call.service, call.data, call.templates.isEmpty() ? null : call.templates);
+        }
+        if (!ok) {
+            noActions();
+            return;
+        }
+        if (!LightPresets.shows(t, p)) presetSent.put(t.entity, new long[]{index, now + 6000});
+        invalidate();
     }
 
     // ----- a light's colour rows and effects page (light_controls.h, effects_page.h) -----
@@ -2366,6 +2605,21 @@ public final class TileView extends View {
         String d = t.domain(), s = t.state;
         float rowH = fs * 2.9f;
         float y = body.top;
+        // A light's presets on glass much wider than high: a column at the right of its rows, one key under the other.
+        boolean presetColumn = false;
+        if (d.equals("light") && !LightPresets.of(t).isEmpty() && body.width() > body.height() * 1.25f) {
+            float key = fs * 2.6f;
+            float colW = key + 2 * u;
+            text.setTypeface(regular);
+            text.setTextSize(fs * 0.85f);
+            text.setColor(Style.DIM);
+            text.setTextAlign(Paint.Align.CENTER);
+            c.drawText("Presets", body.right - colW / 2, body.top + fs * 0.9f, text);
+            text.setTextAlign(Paint.Align.LEFT);
+            drawPresets(c, t, new RectF(body.right - colW / 2 - key / 2, body.top + fs * 1.6f, body.right - colW / 2 + key / 2, body.bottom), false);
+            body.right -= colW + 4 * u;
+            presetColumn = true;
+        }
         List<String[]> buttons = new ArrayList<String[]>();
         if (d.equals("light") || d.equals("switch") || d.equals("input_boolean") || d.equals("fan")
                 || d.equals("automation") || d.equals("humidifier") || d.equals("siren")) {
@@ -2440,6 +2694,17 @@ public final class TileView extends View {
             if (whiteLight(t) && y + colourH <= body.bottom) {
                 drawColourRow(c, t, false, new RectF(body.left, y, body.right, y + colourH), fs);
                 y += colourH + 3 * u;
+            }
+            // Its presets, a row under the colour, the white shade and the brightness.
+            float presetH = fs * 2.6f;
+            if (!presetColumn && !LightPresets.of(t).isEmpty() && y + presetH + fs * 1.4f <= body.bottom) {
+                text.setTypeface(regular);
+                text.setTextSize(fs * 0.85f);
+                text.setColor(Style.DIM);
+                c.drawText("Presets", body.left, y + fs * 0.9f, text);
+                y += fs * 1.4f;
+                drawPresets(c, t, new RectF(body.left, y, body.right, y + presetH), false);
+                y += presetH + 3 * u;
             }
             // The effects page as a row of its own too, besides the sparkles key in the corner.
             float keyH = fs * 2.4f;
@@ -2528,17 +2793,21 @@ public final class TileView extends View {
         if (d.equals("camera") || d.equals("image")) {
             final Tessera tessera = app.screen().tessera;
             final String entity = t.entity;
-            pictures.want("full", entity);
-            Bitmap b = pictures.keepFresh(tessera, "full", entity, 4000, new Runnable() {
+            final RectF box = new RectF(body.left, y, body.right, body.bottom);
+            // A camera opened: live where it can (a camera full screen goes before the tiles it covers), else a still of
+            // every four seconds; an image entity a still. A picture at its own proportions within the room.
+            final int bw = Math.max(64, Math.round(box.width())), bh = Math.max(64, Math.round(box.height()));
+            final boolean stream = d.equals("camera");
+            pictures.want("full", entity + "|" + bw + "x" + bh);
+            pictures.pace("full", 8);
+            Bitmap b = pictures.keepFresh(tessera, "full", null, 4000, new Runnable() {
                 public void run() {
-                    Map<String, String> f = new LinkedHashMap<String, String>();
-                    f.put("entity", entity);
-                    f.put("size", "");
-                    f.put("bg", "000000");
-                    tessera.askPicture("full", f);
+                    Map<String, Object> q = question("view", -1, entity, "camera:" + entity, bw, bh, 0, 0, "shrink", "000000");
+                    q.put("pace", 4000.0);
+                    if (stream) q.put("live", numbers(bw, bh));
+                    tessera.askQuestion("full", q);
                 }
             });
-            RectF box = new RectF(body.left, y, body.right, body.bottom);
             if (b != null) {
                 float scale = Math.min(box.width() / b.getWidth(), box.height() / b.getHeight());
                 float pw = b.getWidth() * scale, ph = b.getHeight() * scale;
@@ -3105,6 +3374,342 @@ public final class TileView extends View {
         fill.setStyle(Paint.Style.FILL);
     }
 
+    // ----- the doorbell (module_doorbell.cpp, docs/DOORBELL.md) -----
+
+    /** Someone touched it: it stays this long after the last touch or ring. The ring around the disc while it rings. */
+    private static final long ANSWERED_MS = 300000, RINGING_MS = 15000;
+    /** The door key: armed for a second tap, waiting for the lock's new state, "Sent" after an action (doorbell_door.h). */
+    private static final long ARM_MS = 5000, WAIT_MS = 10000, SENT_MS = 2000;
+
+    private Tessera.Ring ring, lastRing;
+    private boolean ringWasTouched, ringEnded;
+    private long ringMs, ringTouchMs, doorArmed, doorSent;
+    private String doorState = "";
+
+    private final Runnable ringTick = new Runnable() {
+        public void run() {
+            if (ring == null) return;
+            long now = SystemClock.uptimeMillis();
+            if (!ringWasTouched && now - ringMs > ring.timeout * 1000L) {
+                report("missed");
+                finishRing(null);
+                return;
+            }
+            if (ringWasTouched && now - Math.max(ringMs, ringTouchMs) > ANSWERED_MS) {
+                ringEnded = true;
+                finishRing(null);
+                return;
+            }
+            invalidate();
+            ui.postDelayed(this, 250);
+        }
+    };
+
+    private static Tessera.Ring copy(Tessera.Ring r) {
+        Tessera.Ring c = new Tessera.Ring();
+        c.camera = r.camera; c.name = r.name; c.key = r.key; c.doorState = r.doorState; c.link = r.link;
+        c.rang = r.rang; c.timeout = r.timeout; c.door = r.door; c.quiet = r.quiet; c.chime = r.chime;
+        return c;
+    }
+
+    /** The op `doorbell`: the view opens over everything, or rings again when it already shows that camera. */
+    public void ring(final Tessera.Ring r) {
+        ui.post(new Runnable() {
+            public void run() { ringNow(r); }
+        });
+    }
+
+    private void ringNow(Tessera.Ring r) {
+        long now = SystemClock.uptimeMillis();
+        if (ring != null && ring.camera.equals(r.camera) && ring.door == r.door) {
+            // It rings again while it shows: the moment it rang, the ring around the disc, the timeout over.
+            ringMs = now;
+            ring.key = r.key;
+            ring.rang = r.rang;
+            ring.timeout = r.timeout;
+            setDoor(r.doorState);
+            lastRing = copy(ring);
+            ringEnded = false;
+            invalidate();
+            return;
+        }
+        if (ring != null) finishRing("closed");
+        // Over any card, the settings page, the calendar or another camera.
+        cardTile = -1;
+        settingsOpen = false;
+        calendarOpen = -1;
+        pictures.forget("full");
+        ring = r;
+        lastRing = copy(r);
+        ringWasTouched = ringEnded = false;
+        ringMs = now;
+        ringTouchMs = doorArmed = doorSent = 0;
+        doorState = r.doorState;
+        pictures.forget("ring");
+        app.screen().screenSettings.ringing(true);
+        ui.removeCallbacks(ringTick);
+        ui.postDelayed(ringTick, 250);
+        invalidate();
+    }
+
+    /** Ring `key` was answered on another screen or dismissed: it closes here without a word. */
+    public void closeRing(final String key) {
+        ui.post(new Runnable() {
+            public void run() {
+                if (ring == null || !ring.key.equals(key)) return;
+                ringEnded = true;
+                finishRing(null);
+            }
+        });
+    }
+
+    public void ringDoorState(final String key, final String state) {
+        ui.post(new Runnable() {
+            public void run() {
+                if (lastRing != null && lastRing.key.equals(key)) lastRing.doorState = state;
+                if (ring != null && ring.key.equals(key)) setDoor(state);
+                invalidate();
+            }
+        });
+    }
+
+    private void setDoor(String state) {
+        if (!state.equals(doorState)) doorSent = 0;
+        doorState = state;
+        if (ring != null) ring.doorState = state;
+    }
+
+    private void report(String action) {
+        if (ring == null) return;
+        if (!action.equals("answered") && !action.equals("door") && !action.equals("seen")) ringEnded = true;
+        app.screen().doorbellReport(action, ring.key);
+    }
+
+    /** The first touch on the view answers the ring; every touch keeps it open. */
+    private void ringTouched() {
+        ringTouchMs = SystemClock.uptimeMillis();
+        if (ringWasTouched) return;
+        ringWasTouched = true;
+        report("answered");
+    }
+
+    /** The view closes: `how` is said when nothing said how it ended yet (its close key, a new alert). */
+    private void finishRing(String how) {
+        if (ring == null) return;
+        if (!ringEnded && how != null) report(how);
+        ringEnded = true;
+        ring = null;
+        pictures.forget("ring");
+        ui.removeCallbacks(ringTick);
+        app.screen().screenSettings.ringing(false);
+        invalidate();
+    }
+
+    /** The missed ring's item in the top bar: the ring this screen showed last, opened again without a chime. */
+    private void reopenRing() {
+        if (lastRing == null) return;
+        if (ring != null) finishRing("closed");
+        ring = copy(lastRing);
+        ringWasTouched = true;
+        ringEnded = false;
+        long now = SystemClock.uptimeMillis();
+        ringMs = now - RINGING_MS;
+        ringTouchMs = now;
+        doorArmed = doorSent = 0;
+        doorState = ring.doorState;
+        app.screen().screenSettings.ringing(true);
+        report("seen");
+        ui.removeCallbacks(ringTick);
+        ui.postDelayed(ringTick, 250);
+        invalidate();
+    }
+
+    public boolean ringing() { return ring != null; }
+
+    private static String agoText(long rang) {
+        long now = System.currentTimeMillis() / 1000;
+        if (rang <= 0) return "";
+        long s = Math.max(0, now - rang);
+        if (s < 60) return "Just now";
+        if (s < 3600) return (s / 60) + " min ago";
+        if (s < 86400) return (s / 3600) + (s < 7200 ? " hour ago" : " hours ago");
+        return "Yesterday";
+    }
+
+    private void drawRing(Canvas c, int w, int h) {
+        final Tessera.Ring r = ring;
+        long now = SystemClock.uptimeMillis();
+        fill.setColor(0xFF000000);
+        c.drawRect(0, 0, w, h, fill);
+        hits.add(new Hit(new RectF(0, 0, w, h)));
+        float bar = 12 * u, pad = 2.6f * u;
+        // The doorbell's disc where the back key stands, ringed while it rings.
+        float d = 8.4f * u, cx = pad + d / 2, cy = bar / 2;
+        boolean ringingNow = now - ringMs < RINGING_MS;
+        if (ringingNow) {
+            float pulse = (float) (0.5 + 0.5 * Math.sin(now / 160.0));
+            line.setColor(withAlpha(Style.ORANGE, 120 + (int) (100 * pulse)));
+            line.setStrokeWidth(0.6f * u);
+            c.drawCircle(cx, cy, d / 2 + 1.0f * u, line);
+        }
+        fill.setColor(withAlpha(Style.ORANGE, 70));
+        c.drawCircle(cx, cy, d / 2, fill);
+        glyphs.setColor(Style.ORANGE);
+        glyphs.setTextSize(d * 0.6f);
+        c.drawText(Icons.sure(getContext(), "doorbell"), cx, cy + d * 0.21f, glyphs);
+        float tx = pad * 2 + d;
+        float closeW = 12 * u;
+        text.setTextAlign(Paint.Align.LEFT);
+        text.setTypeface(medium);
+        text.setTextSize(4.4f * u);
+        text.setColor(0xFFFFFFFF);
+        String name = fit(r.name, w - tx - closeW - 30 * u);
+        c.drawText(name, tx, cy + 1.5f * u, text);
+        float nx = tx + text.measureText(name) + 2.5f * u;
+        text.setTypeface(regular);
+        text.setTextSize(3.8f * u);
+        text.setColor(0xFFB0B6C0);
+        c.drawText(agoText(r.rang), nx, cy + 1.4f * u, text);
+        // The close key at the right: it answers the ring too.
+        glyphs.setColor(0xFFFFFFFF);
+        glyphs.setTextSize(5.6f * u);
+        c.drawText(Icons.sure(getContext(), "close"), w - pad - closeW / 2, cy + 2.0f * u, glyphs);
+        Hit close = new Hit(new RectF(w - closeW - pad * 2, 0, w, bar));
+        close.tap = new Runnable() {
+            public void run() { finishRing("closed"); }
+        };
+        hits.add(close);
+
+        // The picture beside the keys on glass lying down, above them on square or standing glass; never under them.
+        RectF room = new RectF(pad, bar, w - pad, h - pad);
+        RectF keys = null;
+        if (r.door != 0) {
+            if (w > h * 1.15f) {
+                keys = new RectF(w - pad - 34 * u, bar, w - pad, h - pad);
+                room.right = keys.left - pad;
+            } else {
+                keys = new RectF(pad, h - pad - 18 * u, w - pad, h - pad);
+                room.bottom = keys.top - pad;
+            }
+        }
+        drawRingPicture(c, r, room);
+        if (keys != null) drawDoorKey(c, keys, now);
+    }
+
+    private void drawRingPicture(Canvas c, Tessera.Ring r, RectF room) {
+        final Tessera tessera = app.screen().tessera;
+        final String entity = r.camera;
+        final int bw = Math.max(64, Math.round(room.width())), bh = Math.max(64, Math.round(room.height()));
+        pictures.want("ring", entity + "|" + bw + "x" + bh);
+        pictures.pace("ring", 8);
+        Bitmap b = pictures.keepFresh(tessera, "ring", null, 4000, new Runnable() {
+            public void run() {
+                // The camera full view's question, live (docs/PICTURES.md): the add-on streams it if it can, else a still.
+                Map<String, Object> q = question("view", -1, entity, "camera:" + entity, bw, bh, 0, 0, "shrink", "000000");
+                q.put("pace", 4000.0);
+                q.put("live", numbers(bw, bh));
+                tessera.askQuestion("ring", q);
+            }
+        });
+        if (b != null) {
+            float scale = Math.min(room.width() / b.getWidth(), room.height() / b.getHeight());
+            float pw = b.getWidth() * scale, ph = b.getHeight() * scale;
+            RectF dst = new RectF(room.centerX() - pw / 2, room.centerY() - ph / 2, room.centerX() + pw / 2, room.centerY() + ph / 2);
+            c.drawBitmap(b, new Rect(0, 0, b.getWidth(), b.getHeight()), dst, null);
+        } else {
+            text.setTypeface(regular);
+            text.setTextSize(4 * u);
+            text.setColor(0xFFB0B6C0);
+            text.setTextAlign(Paint.Align.CENTER);
+            c.drawText(app.screen().device.actionSubscribers() == 0 ? "Pictures need Home Assistant actions allowed"
+                    : "Connecting to the camera…", room.centerX(), room.centerY(), text);
+            text.setTextAlign(Paint.Align.LEFT);
+        }
+    }
+
+    private boolean doorSending(long now) { return doorSent != 0 && now - doorSent < (ring.door == 1 ? WAIT_MS : SENT_MS); }
+
+    private boolean doorOpens(long now) {
+        if (doorSending(now)) return false;
+        if (ring.door == 2) return true;
+        return ring.door == 1 && (doorState.equals("locked") || doorState.equals("jammed"));
+    }
+
+    /** The Door key: one tap arms it ("Tap again to open"), a second within five seconds opens the door. */
+    private void drawDoorKey(Canvas c, RectF keys, final long now) {
+        boolean armed = doorArmed != 0 && now - doorArmed < ARM_MS;
+        int color;
+        String icon, line;
+        if (armed) {
+            color = Style.ORANGE; icon = "lock-open-variant"; line = "Tap again to open";
+        } else if (ring.door == 2) {
+            color = 0xFFB0B6C0; icon = "door-open"; line = doorSending(now) ? "Sent" : "";
+        } else if (doorSending(now)) {
+            color = Style.ORANGE; icon = "lock-clock"; line = "Unlocking";
+        } else {
+            String st = doorState;
+            color = st.equals("locked") ? Style.GREEN : st.equals("unlocked") || st.equals("open") || st.equals("jammed") ? Style.RED
+                    : st.equals("locking") || st.equals("unlocking") || st.equals("opening") ? Style.ORANGE : 0xFFB0B6C0;
+            icon = st.equals("locked") ? "lock" : st.equals("jammed") ? "lock-alert" : st.equals("locking") || st.equals("unlocking") ? "lock-clock" : "lock-open-variant";
+            line = st.isEmpty() || st.equals("unavailable") || st.equals("unknown") ? "Unavailable" : Character.toUpperCase(st.charAt(0)) + st.substring(1);
+        }
+        boolean column = keys.height() > keys.width();
+        RectF k = column ? new RectF(keys.left, keys.top + 2 * u, keys.right, keys.top + 2 * u + Math.min(30 * u, keys.height() * 0.4f))
+                : new RectF(keys.centerX() - Math.min(45 * u, keys.width() / 2), keys.top, keys.centerX() + Math.min(45 * u, keys.width() / 2), keys.bottom);
+        fill.setColor(armed ? withAlpha(Style.ORANGE, 70) : 0xFF22262E);
+        c.drawRoundRect(k, 3 * u, 3 * u, fill);
+        glyphs.setColor(color);
+        if (column) {
+            glyphs.setTextSize(9 * u);
+            c.drawText(Icons.sure(getContext(), icon), k.centerX(), k.top + k.height() * 0.42f, glyphs);
+            text.setTextAlign(Paint.Align.CENTER);
+            text.setTypeface(medium);
+            text.setTextSize(4.2f * u);
+            text.setColor(0xFFFFFFFF);
+            c.drawText("Door", k.centerX(), k.top + k.height() * 0.66f, text);
+            if (!line.isEmpty()) {
+                text.setTypeface(regular);
+                text.setTextSize(3.2f * u);
+                text.setColor(color);
+                c.drawText(fit(line, k.width() - 2 * u), k.centerX(), k.top + k.height() * 0.85f, text);
+            }
+        } else {
+            glyphs.setTextSize(k.height() * 0.5f);
+            c.drawText(Icons.sure(getContext(), icon), k.left + k.height() * 0.6f, k.centerY() + k.height() * 0.18f, glyphs);
+            text.setTextAlign(Paint.Align.LEFT);
+            text.setTypeface(medium);
+            text.setTextSize(4.4f * u);
+            text.setColor(0xFFFFFFFF);
+            float lx = k.left + k.height() * 1.2f;
+            c.drawText("Door", lx, line.isEmpty() ? k.centerY() + 1.5f * u : k.centerY() - 0.5f * u, text);
+            if (!line.isEmpty()) {
+                text.setTypeface(regular);
+                text.setTextSize(3.4f * u);
+                text.setColor(color);
+                c.drawText(fit(line, k.right - lx - 2 * u), lx, k.centerY() + 4 * u, text);
+            }
+        }
+        text.setTextAlign(Paint.Align.LEFT);
+        Hit h = new Hit(k);
+        h.tap = new Runnable() {
+            public void run() {
+                long t = SystemClock.uptimeMillis();
+                if (ring == null) return;
+                if (!doorOpens(t)) {
+                    doorArmed = 0;
+                } else if (doorArmed != 0 && t - doorArmed < ARM_MS) {
+                    doorArmed = 0;
+                    doorSent = t;
+                    report("door");
+                } else {
+                    doorArmed = t;
+                }
+                invalidate();
+            }
+        };
+        hits.add(h);
+    }
+
     // ----- alerts and banners -----
 
     private void drawAlert(Canvas c, int w, int h) {
@@ -3413,6 +4018,7 @@ public final class TileView extends View {
         float x = ev.getX(), y = ev.getY();
         switch (ev.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
+                if (ring != null) ringTouched();
                 downX = x;
                 downY = y;
                 swiping = false;

@@ -25,6 +25,9 @@ public class RenderMain {
             public void dismissAlert() { view[0].dismissAlert(); }
             public void openSettings() { view[0].openSettingsPage(); }
             public void changed() { view[0].changed(); }
+            public void ring(Tessera.Ring r) { System.out.println("[ui] ring " + r.name); view[0].ring(r); }
+            public void closeRing(String key) { view[0].closeRing(key); }
+            public void ringDoorState(String key, String state) { view[0].ringDoorState(key, state); }
             public void show(String what) { System.out.println("[ui] show " + what); app.screen.showing(what); }
         });
         app.screen.screenSettings.setUi(new ScreenSettings.Ui() {

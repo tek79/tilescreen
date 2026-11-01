@@ -54,7 +54,7 @@ public final class ScreenSettings {
 
     // Standby (core.yaml): last_touch_ms counts the standby time, last_use_ms Back to page 1.
     private long lastTouch = System.currentTimeMillis(), lastUse = System.currentTimeMillis();
-    private boolean dimmed, sleepRequested, alertActive, touchDown;
+    private boolean dimmed, sleepRequested, alertActive, ringActive, touchDown;
 
     public ScreenSettings(EspDevice device, Store store, EspDevice.Logger log, Map<String, Integer> defaults) {
         this.store = store;
@@ -347,7 +347,7 @@ public final class ScreenSettings {
     public void tick() {
         boolean due;
         synchronized (this) {
-            due = standbyEnabled != 0 && androidSaver == 0 && !dimmed && !touchDown && !alertActive
+            due = standbyEnabled != 0 && androidSaver == 0 && !dimmed && !touchDown && !alertActive && !ringActive
                     && System.currentTimeMillis() - lastTouch > standbySeconds * 1000L;
         }
         if (due) dim();
@@ -358,7 +358,7 @@ public final class ScreenSettings {
 
     /** Whether Back to page 1 is due: it's on, the screen is lit, and nobody touched it for long enough. */
     public synchronized boolean homeDue() {
-        return autoHome != 0 && !dimmed && !touchDown && !alertActive
+        return autoHome != 0 && !dimmed && !touchDown && !alertActive && !ringActive
                 && System.currentTimeMillis() - lastUse > autoHomeSeconds * 1000L;
     }
 
@@ -434,6 +434,17 @@ public final class ScreenSettings {
         Runnable r = onSleep;
         if (r != null) r.run();
         dim();
+    }
+
+    /** A ring's view (the doorbell) wakes the screen and holds standby and Back to page 1 off while it shows. */
+    public void ringing(boolean up) {
+        synchronized (this) {
+            ringActive = up;
+            if (up) wakeLocked(); else lastTouch = lastUse = System.currentTimeMillis();
+        }
+        Ui u = ui;
+        if (up && u != null && androidSaver()) u.systemWake();
+        apply();
     }
 
     /** An alert wakes the screen and holds standby off while it is up. */

@@ -30,6 +30,7 @@ import android.view.MotionEvent;
 import android.widget.FrameLayout;
 
 import app.tilescreen.core.Screen;
+import app.tilescreen.core.Tessera;
 import app.tilescreen.core.ScreenSettings;
 import app.tilescreen.ui.SaverView;
 import app.tilescreen.ui.TileView;
@@ -290,6 +291,19 @@ public final class MainActivity extends Activity implements Screen.Ui, ScreenSet
 
     public void dismissAlert() { view.dismissAlert(); }
 
+    /** A ring: the tiles in front (from the widget page or another app), the chime, the doorbell's view. */
+    public void ring(final Tessera.Ring r) {
+        boolean again = view.ringing();
+        show(Screen.TILES);
+        if (r.chime) Chime.play();
+        view.ring(r);
+        if (!again) app.log("doorbell: " + r.name + " on the glass");
+    }
+
+    public void closeRing(String key) { view.closeRing(key); }
+
+    public void ringDoorState(String key, String state) { view.ringDoorState(key, state); }
+
     public void changed() { view.changed(); }
 
     /** Home Assistant's open_settings: the settings page on the glass, as on a Tessera screen. */
@@ -508,6 +522,8 @@ public final class MainActivity extends Activity implements Screen.Ui, ScreenSet
                 + app.automaticName() + ")", app.friendly(), false);
         final EditText cols = field(box, "Columns (landscape)", String.valueOf(app.columns()), true);
         final EditText rows = field(box, "Rows (landscape)", String.valueOf(app.rows()), true);
+        final EditText live = field(box, "Live camera tiles at once (0 to 8; the rest show a still at their pace)",
+                String.valueOf(app.liveTiles()), true);
 
         label(box, "Orientation");
         final Spinner orient = new Spinner(this);
@@ -608,6 +624,7 @@ public final class MainActivity extends Activity implements Screen.Ui, ScreenSet
                 .setPositiveButton("Save", new DialogInterface.OnClickListener() {
                     public void onClick(DialogInterface d, int which) {
                         String oldNode = app.node(), oldBoard = app.board(), oldName = app.friendly();
+                        int oldLive = app.liveTiles();
                         SharedPreferences.Editor e = p.edit();
                         String n = name.getText().toString().trim();
                         // A name of its own only when it differs from the hostname's, so the hostname keeps counting.
@@ -619,9 +636,12 @@ public final class MainActivity extends Activity implements Screen.Ui, ScreenSet
                         e.putString("board", BOARDS[board.getSelectedItemPosition()]);
                         e.putBoolean("open_on_boot", boot.isChecked());
                         e.putBoolean("widget_page", widgetPage.isChecked());
+                        e.putInt("live_tiles", clamp(live.getText().toString(), 0, 8, app.liveTiles()));
                         e.commit();
                         applyOrientation();
-                        if (!oldNode.equals(app.node()) || !oldBoard.equals(app.board()) || !oldName.equals(app.friendly())) {
+                        // A new count of live tiles goes to Tessera with the next hello, which a restart of the server brings.
+                        if (!oldNode.equals(app.node()) || !oldBoard.equals(app.board()) || !oldName.equals(app.friendly())
+                                || oldLive != app.liveTiles()) {
                             app.restart();
                             app.screen().setUi(MainActivity.this);
                         } else {

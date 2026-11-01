@@ -23,6 +23,10 @@ public final class Screen {
         void changed();
         /** What the glass shows: TILES (Tessera's pages), WIDGETS (the Android page) or ANDROID (the launcher). */
         void show(String what);
+        /** The doorbell (docs/DOORBELL.md): a ring, its close from elsewhere, its lock's new state. */
+        void ring(Tessera.Ring r);
+        void closeRing(String key);
+        void ringDoorState(String key, String state);
     }
 
     public static final String TILES = "Tiles", WIDGETS = "Widgets", ANDROID = "Android";
@@ -166,6 +170,20 @@ public final class Screen {
                 device.callHomeAssistant("esphome." + event, data, null, true);
             }
         });
+        tessera.setDoorbell(new Tessera.Doorbell() {
+            public void ring(Tessera.Ring r) {
+                Ui u = ui;
+                if (u != null) u.ring(r);
+            }
+            public void close(String key) {
+                Ui u = ui;
+                if (u != null) u.closeRing(key);
+            }
+            public void doorState(String key, String state) {
+                Ui u = ui;
+                if (u != null) u.ringDoorState(key, state);
+            }
+        });
         tessera.listen(new Tessera.Listener() {
             public void changed() {
                 Ui u = ui;
@@ -250,6 +268,19 @@ public final class Screen {
         data.put("title", a.title);
         data.put("screen", settings.node);
         device.callHomeAssistant("esphome.screen_alert", data, null, true);
+    }
+
+    /**
+     * How a ring ended here, or the door key's second tap (esphome.screen_doorbell, packages/core.yaml doorbell_report):
+     * answered, closed, missed, seen or door.
+     */
+    public void doorbellReport(String action, String key) {
+        Map<String, String> data = new LinkedHashMap<String, String>();
+        data.put("action", action);
+        data.put("key", key);
+        data.put("screen", settings.node);
+        log.log("doorbell: " + action);
+        device.callHomeAssistant("esphome.screen_doorbell", data, null, true);
     }
 
     public void setUi(Ui u) { ui = u; }
