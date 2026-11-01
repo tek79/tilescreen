@@ -48,7 +48,7 @@ then laid out in one place.
 | | |
 |---|---|
 | **Android** | 5.0 (API 21) or later. Built for and tested on Android 5–7 era devices. |
-| **Tested on** | Amazon Fire 7 (5th gen, 2015) running LineageOS, rooted with Magisk. |
+| **Tested on** | Amazon Fire 7 (5th gen, 2015) running LineageOS 14.1, rooted with Magisk. |
 | | Amazon Fire 10 (7th gen, 2017) running LineageOS 14.1, rooted with Magisk. |
 | | Amazon Fire 8 (8th gen, 2018) running LineageOS 20, rooted with Magisk. |
 | | Amazon Echo Show 5 (1st gen, 2019) running LineageOS 18.1, rooted with Magisk. |
