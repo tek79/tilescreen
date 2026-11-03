@@ -46,7 +46,7 @@ public final class MainActivity extends Activity implements Screen.Ui, ScreenSet
     private WidgetPage widgets;
     private boolean swallowing;
     private Lift lift;
-    private boolean lastAndroid;
+    private boolean lastAndroid, lastDimmed, resumed;
 
     @Override
     protected void onCreate(Bundle saved) {
@@ -103,6 +103,7 @@ public final class MainActivity extends Activity implements Screen.Ui, ScreenSet
     @Override
     protected void onResume() {
         super.onResume();
+        resumed = true;
         immersive();
         Screen s = app.screen();
         s.setUi(this);
@@ -139,9 +140,11 @@ public final class MainActivity extends Activity implements Screen.Ui, ScreenSet
     @Override
     protected void onPause() {
         super.onPause();
+        resumed = false;
         // Another app or an alarm in front: the backlight as Android has it, so an alarm that rings at night brightness
         // 0 isn't rung on a dark glass. (The window's own brightness leaves with the window; only root's write stays.)
-        if (shownLevel >= 0 && shownLevel < 100) restoreBacklight();
+        // Not with Use Android screensaver: its screensaver has just covered the app and sets the panel itself.
+        if (shownLevel >= 0 && shownLevel < 100 && !app.screen().screenSettings.androidSaver()) restoreBacklight();
     }
 
     private void restoreBacklight() {
@@ -370,6 +373,7 @@ public final class MainActivity extends Activity implements Screen.Ui, ScreenSet
                 dark.setVisibility(dimmed && level == 0 && !android ? View.VISIBLE : View.GONE);
                 lastLevel = level;
                 lastAndroid = android;
+                lastDimmed = dimmed;
                 brightnessFor(android, level);
                 // Lift to wake listens only while the screen is dimmed.
                 lift.listen(dimmed && app.screen().screenSettings.liftWake());
@@ -559,13 +563,16 @@ public final class MainActivity extends Activity implements Screen.Ui, ScreenSet
         setWindowBrightness(level <= 0 ? 0f : Math.max(0.004f, drive));
         final boolean changed = level != shownLevel;
         shownLevel = level;
-        // With root the panel's own level goes in too, every time: Android writes its own (its least, for a window
-        // brightness of 0) whenever the window's brightness is set again, which undid a standby of 0 after a while.
+        // With root the panel's own level goes in too: on a change, and every time in standby, since Android writes its
+        // own (its least, for a window brightness of 0) whenever the window's brightness is set again, which undid a
+        // standby of 0 after a while. Never while Android has the screen (Use Android screensaver, or another app or its
+        // screensaver in front): the panel is Android's then, and a write would light a dimmed screen.
+        final boolean ours = resumed && !app.screen().screenSettings.androidSaver() && (changed || lastDimmed);
         new Thread(new Runnable() {
             public void run() {
                 boolean rooted = Root.available();
                 try { Thread.sleep(300); } catch (InterruptedException ignored) {}
-                if (rooted) Root.writeBacklight(Math.round(drive * Root.max()));
+                if (rooted && ours) Root.writeBacklight(Math.round(drive * Root.max()));
                 if (!changed) return;
                 try { Thread.sleep(400); } catch (InterruptedException ignored) {}
                 app.log("brightness " + level + "% -> drive " + Math.round(drive * 1000) / 10f + "%, backlight now "
