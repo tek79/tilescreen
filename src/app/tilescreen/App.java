@@ -314,6 +314,8 @@ public final class App extends Application {
         final Screen made = new Screen(s, shape(), store, settingsStore, settingDefaults(), log);
         made.device.setKey(key(), keyStore);
         screen = made;
+        // The battery's sensors before Home Assistant lists the entities.
+        battery(registerReceiver(null, new android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED)));
         acquireLocks();
         final Screen.Settings settings = s;
         // Sockets stay off the main thread, which Android forbids them.
@@ -528,6 +530,28 @@ public final class App extends Application {
         } catch (IOException e) {
             Log.w(TAG, "keeping the layout failed", e);
         }
+    }
+
+    // ----- the battery (Android's ACTION_BATTERY_CHANGED), for its sensors and the hello -----
+
+    /** Reports a battery intent to the screen: level, state and charger, as the Home Assistant app names them. */
+    public void battery(android.content.Intent i) {
+        Screen s = screen;
+        if (i == null || s == null) return;
+        if (!i.getBooleanExtra(android.os.BatteryManager.EXTRA_PRESENT, true)) return;
+        int level = i.getIntExtra(android.os.BatteryManager.EXTRA_LEVEL, -1), scale = i.getIntExtra(android.os.BatteryManager.EXTRA_SCALE, 100);
+        if (level < 0 || scale <= 0) return;
+        int status = i.getIntExtra(android.os.BatteryManager.EXTRA_STATUS, -1);
+        String state = status == android.os.BatteryManager.BATTERY_STATUS_CHARGING ? "charging"
+                : status == android.os.BatteryManager.BATTERY_STATUS_FULL ? "full"
+                : status == android.os.BatteryManager.BATTERY_STATUS_NOT_CHARGING ? "not_charging"
+                : status == android.os.BatteryManager.BATTERY_STATUS_DISCHARGING ? "discharging" : "unknown";
+        int plugged = i.getIntExtra(android.os.BatteryManager.EXTRA_PLUGGED, 0);
+        String charger = plugged == android.os.BatteryManager.BATTERY_PLUGGED_AC ? "ac"
+                : plugged == android.os.BatteryManager.BATTERY_PLUGGED_USB ? "usb"
+                : plugged == android.os.BatteryManager.BATTERY_PLUGGED_WIRELESS ? "wireless" : "none";
+        Tessera.hasBattery = true;
+        s.battery(Math.round(level * 100f / scale), state, charger);
     }
 
     // ----- Tap sound's two sounds (assets tap.wav and step.wav, from the plugin), on the system sound stream -----

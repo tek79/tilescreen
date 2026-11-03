@@ -28,7 +28,7 @@ public final class EspDevice {
     // Message ids from esphome's api.proto.
     static final int HELLO_REQ = 1, HELLO_RESP = 2, AUTH_REQ = 3, AUTH_RESP = 4, DISCONNECT_REQ = 5,
             DISCONNECT_RESP = 6, PING_REQ = 7, PING_RESP = 8, DEVICE_INFO_REQ = 9, DEVICE_INFO_RESP = 10,
-            LIST_ENTITIES_REQ = 11, LIST_TEXT_SENSOR = 18, LIST_DONE = 19, SUBSCRIBE_STATES = 20,
+            LIST_ENTITIES_REQ = 11, LIST_SENSOR = 16, SENSOR_STATE = 25, LIST_TEXT_SENSOR = 18, LIST_DONE = 19, SUBSCRIBE_STATES = 20,
             TEXT_SENSOR_STATE = 27, SUBSCRIBE_LOGS = 28, SUBSCRIBE_HA_SERVICES = 34, HA_ACTION_REQ = 35,
             GET_TIME_REQ = 36, GET_TIME_RESP = 37, SUBSCRIBE_HA_STATES = 38, HA_STATE = 40,
             LIST_SERVICES = 41, EXECUTE_SERVICE = 42, LIST_NUMBER = 49, NUMBER_STATE = 50, NUMBER_CMD = 51,
@@ -162,6 +162,36 @@ public final class EspDevice {
         int stateType() { return TEXT_SENSOR_STATE; }
 
         Pb.Out state() { return new Pb.Out().key(1, key()).string(2, value).bool(3, !known); }
+    }
+
+    /** A sensor with a number (ListEntitiesSensorResponse, SensorStateResponse): its unit, device class and decimals. */
+    public static final class Sensor extends Entity {
+        public String unit = "", deviceClass = "";
+        public int decimals = 0;
+        /** Home Assistant's state class: 1 measurement (kept in long-term statistics), 0 none. */
+        public int stateClass = 1;
+        private volatile float value;
+        private volatile boolean known;
+
+        public Sensor(String objectId, String name) { super(objectId, name); }
+
+        public void set(float v) {
+            if (known && v == value) return;
+            value = v;
+            known = true;
+            publish();
+        }
+
+        int listType() { return LIST_SENSOR; }
+
+        Pb.Out describe() {
+            return new Pb.Out().string(1, objectId).key(2, key()).string(3, name).string(5, icon).string(6, unit)
+                    .varint(7, decimals).string(9, deviceClass).varint(10, stateClass).varint(13, category);
+        }
+
+        int stateType() { return SENSOR_STATE; }
+
+        Pb.Out state() { return new Pb.Out().key(1, key()).flt(2, value).bool(3, !known); }
     }
 
     public static final class Number extends Entity {
@@ -733,7 +763,10 @@ public final class EspDevice {
             }
             Pb.Field idf = Pb.first(f, 3), wants = Pb.first(f, 4);
             int callId = idf == null ? 0 : (int) idf.varint;
-            boolean answer = wants != null && wants.varint != 0;
+            boolean wantsData = wants != null && wants.varint != 0;
+            // Home Assistant numbers every call of an action that may answer and waits for its status, also when it asked
+            // for no data (an automation without response_variable): a numbered call always gets its answer.
+            boolean answer = callId != 0 || wantsData;
             if (action == null) {
                 if (answer) send(EXECUTE_SERVICE_RESP, new Pb.Out().varint(1, callId).string(3, "unknown action"));
                 return;
@@ -771,7 +804,7 @@ public final class EspDevice {
                 Object result = action.handler.run(args);
                 if (answer) {
                     Pb.Out r = new Pb.Out().varint(1, callId).bool(2, true);
-                    if (result != null) r.bytes(4, Json.write(result).getBytes(Pb.UTF8));
+                    if (result != null && wantsData) r.bytes(4, Json.write(result).getBytes(Pb.UTF8));
                     send(EXECUTE_SERVICE_RESP, r);
                 }
             } catch (Exception e) {

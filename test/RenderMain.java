@@ -18,6 +18,7 @@ public class RenderMain {
         Screen.Settings s = new Screen.Settings();
         s.node = "kitchen-fire"; s.friendly = "Kitchen Fire"; s.mac = "AA:BB:CC:DD:EE:02";
         app.screen = new Screen(s, app.shape(), null, null, null, new EspDevice.Logger() { public void log(String l) { System.out.println("[log] " + l); } });
+        if (System.getenv("BATTERY") != null) app.screen.battery(87, "discharging", "none");
         final TileView[] view = new TileView[1];
         final app.tilescreen.ui.SaverView[] saverView = new app.tilescreen.ui.SaverView[1];
         app.screen.setUi(new Screen.Ui() {

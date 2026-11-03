@@ -8,7 +8,7 @@ It is built for low-memory tablets such as the 5th-gen Fire 7 running LineageOS.
 view and no Home Assistant app inside it: a small native app draws the tiles itself. It should run
 on Android 5.0 and later.
 
-This guide covers version 0.12.0.
+This guide covers version 0.12.2.
 
 ## 1. Install it on the tablet
 
@@ -269,6 +269,27 @@ Tile Screen stays the tablet's home app, so Home Assistant keeps control. The sc
 on the glass (Tiles, Widgets or Android, for any other app) and switches it; `show_page` brings the tiles back. When
 another app or an alarm comes to the front, the backlight goes back to Android's brightness, so an alarm at night
 brightness 0 doesn't ring on a dark screen.
+
+## The battery
+
+A tablet with a battery has three diagnostic sensors on its device in Home Assistant, as the Home Assistant app has:
+**Battery level** (%), **Battery state** (charging, discharging, full, not_charging) and **Charger type** (ac, usb,
+wireless, none). Tessera also learns that the tablet has a battery, so its top bar offers the battery item.
+
+## Sending alerts from Home Assistant
+
+The tablet's `show_alert` and `show_alert_choice` actions are ESPHome actions, and Home Assistant makes every field of
+an ESPHome action required, as on a Tessera screen: fill in each one (an empty text, `timeout: 0`, `flash: false`).
+Easier is Tessera's own event, which needs only a title and finds the screens by name:
+
+```yaml
+- event: esp_screens_show_alert
+  event_data:
+    title: Laundry is done
+    screen: portable-tablet
+```
+
+`screen_message` is the channel Tessera's add-on talks to the screen through, not an action to call yourself.
 
 ## The next alarm
 

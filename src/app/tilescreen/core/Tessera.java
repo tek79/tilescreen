@@ -31,6 +31,9 @@ public final class Tessera {
      */
     public static volatile int liveTiles = 2;
 
+    /** Whether this tablet has a battery (Android's BatteryManager): the hello says `battery`. */
+    public static volatile boolean hasBattery;
+
     /**
      * The plugins this app draws (docs/PLUGINS.md, "Negotiation"): the plugin API it speaks and, per plugin, its id, the
      * version of Tessera's release it was ported from, its tiles and its screensavers ({id, version, tiles, savers}).
@@ -850,6 +853,8 @@ public final class Tessera {
         }
         List<Object> features = new ArrayList<Object>();
         for (String f : FEATURES) features.add(f);
+        // A tablet with a battery: Tessera offers the top bar's battery item (docs/BATTERY.md).
+        if (hasBattery) features.add("battery");
         Map<String, Object> a = new LinkedHashMap<String, Object>();
         a.put("status", status);
         a.put("rev", layout.revision);

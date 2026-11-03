@@ -50,6 +50,8 @@ public final class ScreenService extends Service {
         };
         IntentFilter pf = new IntentFilter(Intent.ACTION_POWER_CONNECTED);
         pf.addAction(Intent.ACTION_POWER_DISCONNECTED);
+        // Every change of the battery too: its sensors (level, state, charger).
+        pf.addAction(Intent.ACTION_BATTERY_CHANGED);
         registerReceiver(power, pf);
         reportPower(registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED)));
     }
@@ -57,6 +59,7 @@ public final class ScreenService extends Service {
     private BroadcastReceiver alarms, power;
 
     private void reportPower(Intent intent) {
+        if (intent != null && Intent.ACTION_BATTERY_CHANGED.equals(intent.getAction())) App.get().battery(intent);
         boolean on;
         if (intent != null && Intent.ACTION_POWER_CONNECTED.equals(intent.getAction())) on = true;
         else if (intent != null && Intent.ACTION_POWER_DISCONNECTED.equals(intent.getAction())) on = false;

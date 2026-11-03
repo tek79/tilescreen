@@ -294,7 +294,43 @@ public final class MainActivity extends Activity implements Screen.Ui, ScreenSet
 
     // ----- Screen.Ui, called from the network threads -----
 
-    public void alert(final Screen.Alert a) { view.showAlert(a); }
+    public void alert(final Screen.Alert a) {
+        view.showAlert(a);
+        if (a.flash) blink();
+    }
+
+    /**
+     * An alert with `flash`: the backlight blinks four times as it arrives, off for 140 ms and on for 180 ms
+     * (packages/features/backlight.yaml alert_flash), then stays as standby or awake wants it. "Off" is the window at its
+     * least with the black cover over it, so it blinks on a tablet without root too.
+     */
+    private void blink() {
+        final long start = 250;  // after the alert woke the screen
+        for (int i = 0; i < 4; i++) {
+            final long at = start + i * 320L;
+            main.postDelayed(new Runnable() {
+                public void run() {
+                    setWindowBrightness(0f);
+                    dark.setVisibility(View.VISIBLE);
+                }
+            }, at);
+            main.postDelayed(new Runnable() {
+                public void run() {
+                    dark.setVisibility(View.GONE);
+                    int level = Math.max(lastLevel, 5);
+                    if (lastAndroid) setWindowBrightness(WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE);
+                    else setWindowBrightness(Math.max(0.004f, perceived(level)));
+                }
+            }, at + 140);
+        }
+        // Then the backlight as it should be, the root's panel level with it.
+        main.postDelayed(new Runnable() {
+            public void run() {
+                shownLevel = -1;
+                brightnessFor(lastAndroid, lastLevel);
+            }
+        }, start + 4 * 320L + 20);
+    }
 
     public void dismissAlert() { view.dismissAlert(); }
 

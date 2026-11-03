@@ -224,6 +224,38 @@ public final class Screen {
         nextAlarmApp.set(app == null ? "" : app);
     }
 
+    // ----- the battery, as the Home Assistant app reports it: level, state and charger -----
+
+    private EspDevice.Sensor batteryLevel;
+    private EspDevice.TextSensor batteryState, chargerType;
+
+    /**
+     * The tablet's battery (ScreenService, from Android's ACTION_BATTERY_CHANGED): its level in percent, its state
+     * (charging, discharging, full, not_charging) and its charger (ac, usb, wireless, none). The sensors appear with the
+     * first report, so a tablet without a battery has none.
+     */
+    public synchronized void battery(int level, String state, String charger) {
+        if (batteryLevel == null) {
+            batteryLevel = new EspDevice.Sensor("battery_level", "Battery level");
+            batteryLevel.unit = "%";
+            batteryLevel.deviceClass = "battery";
+            batteryLevel.icon = "mdi:battery";
+            batteryLevel.category = EspDevice.CATEGORY_DIAGNOSTIC;
+            device.add(batteryLevel);
+            batteryState = new EspDevice.TextSensor("battery_state", "Battery state");
+            batteryState.icon = "mdi:battery-minus";
+            batteryState.category = EspDevice.CATEGORY_DIAGNOSTIC;
+            device.add(batteryState);
+            chargerType = new EspDevice.TextSensor("charger_type", "Charger type");
+            chargerType.icon = "mdi:battery-charging";
+            chargerType.category = EspDevice.CATEGORY_DIAGNOSTIC;
+            device.add(chargerType);
+        }
+        batteryLevel.set(level);
+        batteryState.set(state);
+        chargerType.set(charger);
+    }
+
     private EspDevice.TextSensor diagnostic(String id, String name, String value) {
         EspDevice.TextSensor t = new EspDevice.TextSensor(id, name);
         t.category = EspDevice.CATEGORY_DIAGNOSTIC;
