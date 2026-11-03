@@ -50,6 +50,7 @@ public final class TileView extends View {
         Slider slider;
         boolean scrub;
         SettingsPage.Stepper repeat;
+        PluginKit.Drag drag;
 
         Hit(RectF r) { this.r = r; }
     }
@@ -134,8 +135,19 @@ public final class TileView extends View {
         this.host = host;
         glyphs.setTypeface(Icons.font(c));
         glyphs.setTextAlign(Paint.Align.CENTER);
+        plugins();
+        app.screen().tessera.setPluginMessages(new app.tilescreen.core.Tessera.PluginMessages() {
+            public void message(String plugin, Map<String, Object> m) {
+                PluginKit.Plugin p = PluginKit.of(plugin);
+                if (p != null) p.onMessage(m);
+                changed();
+            }
+        });
         tick.run();
     }
+
+    /** The plugins this app draws, named in the hello (PluginKit). Called at start, before Tessera asks. */
+    public static void plugins() { PluginKit.all(); }
 
     // ----- updates from the screen -----
 
@@ -196,6 +208,7 @@ public final class TileView extends View {
 
     private void home(boolean toHome) {
         cardTile = -1;
+        pluginCard = null;
         settingsOpen = false;
         calendarOpen = -1;
         pictures.forget("full");
@@ -285,6 +298,7 @@ public final class TileView extends View {
                 cardTile = -1;
             }
             if (cardTile < 0) cardOverride = null;
+            if (pluginCard != null) drawPluginCard(c, w, h);
             if (speakerAsk != null) drawSpeakers(c, w, h);
         }
         if (calendarOpen >= 0) drawCalendarFull(c, w, h);
@@ -655,6 +669,8 @@ public final class TileView extends View {
             SettingsPage.Stepper r = repeating;
             if (r == null) return;
             r.step(SystemClock.uptimeMillis() - repeatDown > 1200);
+            // A held key steps once more (touch_feedback::step).
+            for (PluginKit.Plugin p : PluginKit.all()) p.onStep(false, pluginHost());
             invalidate();
             ui.postDelayed(this, 140);
         }
@@ -663,6 +679,27 @@ public final class TileView extends View {
     private float drawBarItem(Canvas c, Tessera.BarItem it, float right, float mid) {
         String k = it.kind;
         String words = null, icon = Icons.glyph(it.icon);
+        if (k.equals("plugin")) {
+            // A plugin's item (plugin:<plugin>.<item>): what the plugin says now, or nothing.
+            String[] pk = PluginKit.key(it.text);
+            PluginKit.Plugin p = pk == null ? null : PluginKit.of(pk[0]);
+            PluginKit.Bar bar = p == null ? null : p.bar(pk[1], layout, pluginHost());
+            if (bar == null || !bar.shown) return right + 2.6f * u;
+            int col = bar.color != 0 ? bar.color : Style.TEXT;
+            text.setColor(col);
+            if (!it.iconOnly && !bar.words.isEmpty()) {
+                c.drawText(bar.words, right, mid + 1.4f * u, text);
+                right -= text.measureText(bar.words) + 1.0f * u;
+            }
+            String g = Icons.glyph(bar.icon);
+            if (g != null) {
+                glyphs.setColor(col);
+                glyphs.setTextSize(4.4f * u);
+                c.drawText(g, right - 2.2f * u, mid + 1.6f * u, glyphs);
+                right -= 4.4f * u;
+            }
+            return right;
+        }
         Date now = new Date();
         if (k.equals("clock") || k.equals("analog")) {
             words = new SimpleDateFormat(layout.clock24 ? "HH:mm" : "h:mm a", Locale.getDefault()).format(now);
@@ -836,6 +873,10 @@ public final class TileView extends View {
             dim = 0xFFD0D4DC;
         }
 
+        if (e.startsWith("plugin:")) {
+            drawPluginTile(c, index, t, r, fs, pad, fg, dim, accent, pastel, card, hit);
+            return;
+        }
         if (textRows != null) {
             hit.tap = hit.hold = null;  // a tap on the tile does nothing
             float tfs = Math.max(11, Math.min(base / 9.5f, 3.9f * u));
@@ -2277,6 +2318,196 @@ public final class TileView extends View {
         }
         if (!LightPresets.shows(t, p)) presetSent.put(t.entity, new long[]{index, now + 6000});
         invalidate();
+    }
+
+    // ----- Tessera's plugins, ported (PluginKit) -----
+
+    /** The card of a plugin over the page: {plugin, card, entity, tile index}, or null. */
+    private String[] pluginCard;
+    private PluginKit.Drag dragged;
+    private int lastStep = Integer.MIN_VALUE;
+    private PluginKit.Host pluginHost;
+
+    private PluginKit.Host pluginHost() {
+        if (pluginHost == null) pluginHost = new PluginKit.Host() {
+            public Context context() { return getContext(); }
+
+            public void tap(RectF r, Runnable run) {
+                Hit h = new Hit(new RectF(r));
+                h.tap = run;
+                hits.add(h);
+            }
+
+            public void drag(RectF r, PluginKit.Drag d) {
+                Hit h = new Hit(new RectF(r));
+                h.drag = d;
+                hits.add(h);
+            }
+
+            public boolean perform(String service, Map<String, String> data, Map<String, String> templates) {
+                boolean ok = app.screen().perform(service, data, templates);
+                if (!ok) noActions();
+                invalidate();
+                return ok;
+            }
+
+            public int ask(String plugin, Map<String, Object> request) {
+                return app.screen().tessera.askForPlugin(plugin, request);
+            }
+
+            public void openCard(String plugin, String card, String entity, int tile) {
+                pluginCard = new String[]{plugin, card, entity == null ? "" : entity, String.valueOf(tile)};
+                invalidate();
+            }
+
+            public void closeCard() {
+                pluginCard = null;
+                invalidate();
+            }
+
+            public void redraw(long ms) {
+                ui.postDelayed(new Runnable() {
+                    public void run() { invalidate(); }
+                }, Math.max(16, ms));
+            }
+
+            public app.tilescreen.core.ScreenSettings settings() { return app.screen().screenSettings; }
+
+            public boolean clock24() { return layout != null && layout.clock24; }
+
+            public void say(String words) { TileView.this.say(words); }
+        };
+        return pluginHost;
+    }
+
+    /** A finger landed on something that takes it: every plugin hears it (Tap sound ticks). */
+    private void pressed() {
+        for (PluginKit.Plugin p : PluginKit.all()) p.onPress(pluginHost());
+    }
+
+    /** A dragged value passed a step: every 5 % of its range, or each value of a range of 20 or fewer. */
+    private void stepped(double v, double min, double max) {
+        if (max <= min) return;
+        int steps = max - min <= 20 ? (int) Math.round(max - min) : 20;
+        int at = (int) Math.round((v - min) / (max - min) * steps);
+        if (at == lastStep) return;
+        boolean first = lastStep == Integer.MIN_VALUE;
+        lastStep = at;
+        if (first) return;  // the first value after a landing only marks the start
+        for (PluginKit.Plugin p : PluginKit.all()) p.onStep(at == 0 || at == steps, pluginHost());
+    }
+
+    private PluginKit.Ctx pluginCtx(Canvas c, int index, Tessera.Tile t, RectF box, float fs, int fg, int dim, int accent, boolean pastel) {
+        PluginKit.Ctx k = new PluginKit.Ctx();
+        k.c = c;
+        k.box = box;
+        k.tile = t;
+        k.index = index;
+        Object pe = t == null ? null : t.options.get("pe");
+        k.entity = pe instanceof String ? (String) pe : "";
+        k.fs = fs;
+        k.u = u;
+        k.mm = mm();
+        k.ink = fg;
+        k.dim = dim;
+        k.accent = accent;
+        k.card = Style.CARD;
+        k.raised = pastel ? 0x22000000 : Style.RAISED;
+        k.pastel = pastel;
+        k.text = text;
+        k.glyphs = glyphs;
+        k.fill = fill;
+        k.line = line;
+        k.regular = regular;
+        k.medium = medium;
+        k.light = light;
+        k.host = pluginHost();
+        return k;
+    }
+
+    /** A plugin tile: the plugin draws in the card's room; one this app has not ported is its icon, name and "Plugin missing". */
+    private void drawPluginTile(Canvas c, final int index, final Tessera.Tile t, RectF r, float fs, float pad, int fg, int dim,
+                                int accent, int pastel, boolean card, Hit hit) {
+        String[] pk = PluginKit.key(t.entity);
+        final PluginKit.Plugin p = pk == null ? null : PluginKit.of(pk[0]);
+        RectF box = new RectF(r.left + pad, r.top + pad * 0.8f, r.right - pad, r.bottom - pad * 0.8f);
+        final PluginKit.Ctx k = pluginCtx(c, index, t, box, fs, fg, dim, accent, pastel != 0);
+        final String tileId = pk == null ? "" : pk[1];
+        hit.hold = null;
+        if (p != null && !"none".equals(t.tap)) {
+            hit.tap = new Runnable() {
+                public void run() { p.tapTile(tileId, k); }
+            };
+        } else {
+            hit.tap = null;
+        }
+        if (p != null && p.drawTile(tileId, k)) return;
+        float ic = Math.min(fs * 2.7f, r.height() * 0.42f);
+        fill.setColor(pastel != 0 ? 0x22000000 : Style.RAISED);
+        c.drawCircle(r.left + pad + ic / 2, r.top + pad + ic / 2, ic / 2, fill);
+        glyphs.setColor(dim);
+        glyphs.setTextSize(ic * 0.56f);
+        String g = Icons.glyph(t.icon);
+        c.drawText(g != null ? g : Icons.sure(getContext(), "puzzle-outline"), r.left + pad + ic / 2, r.top + pad + ic * 0.7f, glyphs);
+        text.setTypeface(medium);
+        text.setTextSize(fs);
+        text.setColor(fg);
+        text.setTextAlign(Paint.Align.LEFT);
+        c.drawText(fit(t.name, r.width() - pad * 2), r.left + pad, r.bottom - pad - fs * 1.3f, text);
+        text.setTypeface(regular);
+        text.setTextSize(fs * 0.85f);
+        text.setColor(dim);
+        c.drawText("Plugin missing", r.left + pad, r.bottom - pad, text);
+    }
+
+    /** A plugin's card over the page, as every card: its title and the plugin's room under it; a tap outside closes it. */
+    private void drawPluginCard(Canvas c, int w, int h) {
+        final String[] pc = pluginCard;
+        PluginKit.Plugin p = PluginKit.of(pc[0]);
+        if (p == null) {
+            pluginCard = null;
+            return;
+        }
+        fill.setColor(0xB0000000);
+        c.drawRect(0, 0, w, h, fill);
+        Hit outside = new Hit(new RectF(0, 0, w, h));
+        outside.tap = new Runnable() {
+            public void run() { pluginCard = null; }
+        };
+        hits.add(outside);
+        float cw = Math.min(w * 0.86f, 120 * u), chh = h * 0.82f;
+        RectF r = new RectF((w - cw) / 2, (h - chh) / 2, (w + cw) / 2, (h + chh) / 2);
+        fill.setColor(Style.CARD);
+        c.drawRoundRect(r, 3 * u, 3 * u, fill);
+        hits.add(new Hit(new RectF(r)));
+        float pad = 4 * u, fs = 4.2f * u;
+        int index = -1;
+        try { index = Integer.parseInt(pc[3]); } catch (NumberFormatException ignored) {}
+        Tessera.Tile t = layout != null && index >= 0 && index < layout.tiles.size() ? layout.tiles.get(index) : null;
+        // Its title: the card's own words, else the tile's name; the close key at the right.
+        String title = p.cardTitle(pc[1]);
+        if (title.isEmpty() && t != null) title = t.name;
+        text.setTypeface(medium);
+        text.setTextSize(fs * 1.2f);
+        text.setColor(Style.TEXT);
+        text.setTextAlign(Paint.Align.LEFT);
+        c.drawText(fit(title, cw - pad * 2 - 10 * u), r.left + pad, r.top + pad + fs, text);
+        glyphs.setColor(Style.DIM);
+        glyphs.setTextSize(6 * u);
+        c.drawText(Icons.sure(getContext(), "close"), r.right - pad - 2 * u, r.top + pad + fs * 1.05f, glyphs);
+        Hit close = new Hit(new RectF(r.right - pad - 8 * u, r.top, r.right, r.top + pad + fs * 2));
+        close.tap = new Runnable() {
+            public void run() { pluginCard = null; }
+        };
+        hits.add(close);
+        RectF body = new RectF(r.left + pad, r.top + pad + fs * 2.2f, r.right - pad, r.bottom - pad);
+        PluginKit.Ctx k = pluginCtx(c, index, t, body, fs, Style.TEXT, Style.DIM, Style.BLUE, false);
+        if (!pc[2].isEmpty()) k.entity = pc[2];
+        if (t == null || !t.entity.startsWith("plugin:")) {
+            // Opened by a tap action on a tile of Home Assistant's own: the plugin reads that tile's entity.
+            k.tile = t;
+        }
+        p.drawCard(pc[1], k);
     }
 
     // ----- a light's colour rows and effects page (light_controls.h, effects_page.h) -----
@@ -3819,6 +4050,12 @@ public final class TileView extends View {
         }
         if (e.startsWith("screen.")) return;
         if ("none".equals(t.tap)) return;
+        // A tap action of a plugin (plugin:<plugin>.<action>) set on this tile.
+        String[] pk = PluginKit.key(t.tap);
+        if (!hold && pk != null) {
+            PluginKit.Plugin p = PluginKit.of(pk[0]);
+            if (p != null && p.tapAction(pk[1], t, index, pluginHost())) return;
+        }
         if (!hold && "action".equals(t.tap) && t.actionService() != null) {
             custom(t);
             return;
@@ -4024,9 +4261,19 @@ public final class TileView extends View {
                 swiping = false;
                 longFired = false;
                 dragging = null;
+                lastStep = Integer.MIN_VALUE;
                 moved = false;
                 downHit = hitAt(x, y);
                 topSwipe = y < 3 * u && !settingsOpen;
+                // Touch feedback (plugin API 0.11 on_press): a finger landed on something that takes it.
+                if (downHit != null && (downHit.tap != null || downHit.hold != null || downHit.slider != null
+                        || downHit.repeat != null || downHit.drag != null)) pressed();
+                if (downHit != null && downHit.drag != null) {
+                    dragged = downHit.drag;
+                    dragged.at(x, y, false);
+                    invalidate();
+                    return true;
+                }
                 if (downHit != null && downHit.repeat != null) {
                     repeating = downHit.repeat;
                     repeatDown = SystemClock.uptimeMillis();
@@ -4047,6 +4294,11 @@ public final class TileView extends View {
                 return true;
             case MotionEvent.ACTION_MOVE:
                 if (repeating != null) return true;
+                if (dragged != null) {
+                    dragged.at(x, y, false);
+                    invalidate();
+                    return true;
+                }
                 // A swipe down from the top edge opens the settings page (firmware 0.28.0+), as swiping allows.
                 if (topSwipe && y - downY > 12 * u && Math.abs(x - downX) < y - downY && app.screen().screenSettings.swipe()) {
                     topSwipe = false;
@@ -4074,6 +4326,13 @@ public final class TileView extends View {
                 return true;
             case MotionEvent.ACTION_UP:
                 ui.removeCallbacks(longPress);
+                if (dragged != null) {
+                    PluginKit.Drag d = dragged;
+                    dragged = null;
+                    d.at(x, y, true);
+                    invalidate();
+                    return true;
+                }
                 if (repeating != null) {
                     repeating = null;
                     ui.removeCallbacks(repeater);
@@ -4104,6 +4363,11 @@ public final class TileView extends View {
                 return true;
             case MotionEvent.ACTION_CANCEL:
                 ui.removeCallbacks(longPress);
+                if (dragged != null) {
+                    PluginKit.Drag d = dragged;
+                    dragged = null;
+                    d.at(downX, downY, true);
+                }
                 repeating = null;
                 ui.removeCallbacks(repeater);
                 scrubX = Float.NaN;
@@ -4119,6 +4383,7 @@ public final class TileView extends View {
         double frac = Math.max(0, Math.min(1, (x - s.track.left) / s.track.width()));
         double v = s.min + frac * (s.max - s.min);
         if (s.step > 0) v = Math.round(v / s.step) * s.step;
+        stepped(v, s.min, s.max);
         Held h = held.get(s.key);
         if (h == null) {
             h = new Held();

@@ -33,7 +33,7 @@ public class RenderMain {
         app.screen.screenSettings.setUi(new ScreenSettings.Ui() {
             public void systemSleep() { System.out.println("[power] android screensaver"); }
             public void systemWake() { System.out.println("[power] android wake"); }
-            public void power(boolean dimmed, int level, boolean saver) { System.out.println("[power] dimmed=" + dimmed + " level=" + level + " saver=" + saver); }
+            public void power(boolean dimmed, int level, boolean saver, boolean android) { System.out.println("[power] dimmed=" + dimmed + " level=" + level + " saver=" + saver + " android=" + android); }
             public void goHome() { view[0].goHome(); }
             public void closeCards() { view[0].closeCards(); }
             public void looks() { view[0].changed(); }

@@ -82,6 +82,23 @@ public final class SaverView extends View {
         if (kind.equals("media") || kind.equals("camera") || kind.equals("photos")) {
             if (drawPicture(c, tessera, saver, kind, w, h, u)) return;
         }
+        // A plugin's face of the step, or a step of its own (`pf`, docs/PLUGINS.md "A screensaver").
+        Map<String, Object> pf = saver == null ? null : Json.obj(saver.get("pf"));
+        if (pf != null) {
+            String[] pk = PluginKit.key(Json.str(pf, "p"));
+            PluginKit.Plugin plugin = pk == null ? null : PluginKit.of(pk[0]);
+            if (plugin != null) {
+                PluginKit.Paints p = new PluginKit.Paints();
+                p.text = text;
+                p.glyphs = glyphs;
+                p.fill = fill;
+                p.regular = regular;
+                p.medium = medium;
+                p.light = light;
+                p.context = getContext();
+                if (plugin.drawSaver(pk[1], Json.obj(pf.get("o")), Json.obj(pf.get("x")), c, w, h, mm(), p)) return;
+            }
+        }
         ClockFaces.Face face = ClockFaces.Face.of(saver);
         if (face.kind != ClockFaces.DIGITAL) {
             faces.draw(c, face, w, h, mm(), app.screen().screenSettings.dark(), row(saver));

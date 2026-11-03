@@ -23,13 +23,50 @@ public final class Tessera {
     static final int REFRESH_DEFAULT = 15, REFRESH_LEAST = 5, REFRESH_MOST = 3600;
     static final String[] FEATURES = {"climate_range", "bar_status", "weather_week", "media_rows", "media_library",
             "screensaver", "saver_items", "saver_photos", "clock_faces", "saver_keys",
-            "vacuum_card", "pictures", "live", "doorbell", "light_presets", "text_card", "calendar_detail", "vacuum_tile"};
+            "vacuum_card", "pictures", "live", "doorbell", "light_presets", "text_card", "calendar_detail", "vacuum_tile", "plugins"};
 
     /**
      * How many camera tiles this screen streams at once (the hello's caps.live_tiles): the tablet's own setting. The add-on
      * refuses one more, and every screen together gets eight streams at most (live_stream.MAX_STREAMS).
      */
     public static volatile int liveTiles = 2;
+
+    /**
+     * The plugins this app draws (docs/PLUGINS.md, "Negotiation"): the plugin API it speaks and, per plugin, its id, the
+     * version of Tessera's release it was ported from, its tiles and its screensavers ({id, version, tiles, savers}).
+     * Tessera's add-on records a plugin added in its editor as active for a screen it has no firmware profile of, and
+     * reads from this list whether the screen runs it. Set by the drawing side at start.
+     */
+    public static final String PLUGIN_API = "0.24";
+    public static volatile List<Map<String, Object>> plugins = new ArrayList<Map<String, Object>>();
+
+    /** A plugin's answer from the app (op `plugin`, tessera::send's reply): the plugin's id and the message. */
+    public interface PluginMessages { void message(String plugin, Map<String, Object> m); }
+
+    private volatile PluginMessages pluginMessages;
+
+    public void setPluginMessages(PluginMessages p) { pluginMessages = p; }
+
+    private int pluginAsks;
+
+    /**
+     * A plugin's question to Home Assistant through the app (tessera::send, esphome.screen_plugin): `request` with
+     * `ask` (one of the plugin's ha_commands) and `data`; the answer comes as op `plugin` with the same `re`, the number
+     * returned here (0 when it could not go).
+     */
+    public int askForPlugin(String plugin, Map<String, Object> request) {
+        int number;
+        synchronized (this) { number = ++pluginAsks; }
+        Map<String, Object> body = new LinkedHashMap<String, Object>(request);
+        body.put("re", (double) number);
+        String text = Json.write(body);
+        if (text.length() > 512) return 0;
+        Map<String, String> data = new LinkedHashMap<String, String>();
+        data.put("plugin", plugin);
+        data.put("body", text);
+        tell("screen_plugin", data);
+        return number;
+    }
 
     // ----- the layout -----
 
@@ -40,6 +77,8 @@ public final class Tessera {
         /** A missed ring's item (`b`): a tap opens that ring again. Until when it stands (`x`, unix time), 0 for always. */
         public boolean doorbell;
         public long until;
+        /** A plugin's item (`k` plugin, `t` plugin:<plugin>.<item>): its icon alone (`o` 1). */
+        public boolean iconOnly;
 
         /** Whether it still stands now: a missed ring kept for a while goes by the screen's own clock. */
         public boolean standing() { return until == 0 || System.currentTimeMillis() / 1000 < until; }
@@ -55,6 +94,8 @@ public final class Tessera {
             b.epoch = e == null ? 0 : e.longValue();
             Integer a = Json.integer(m, "a");
             b.weak = a == null ? 0 : a;
+            Integer only = Json.integer(m, "o");
+            b.iconOnly = only != null && only == 1;
             Integer bell = Json.integer(m, "b");
             b.doorbell = b.kind.equals("ago") && bell != null && bell == 1;
             Double x = Json.dbl(m, "x");
@@ -64,7 +105,8 @@ public final class Tessera {
 
         boolean valid() {
             boolean known = kind.equals("clock") || kind.equals("analog") || kind.equals("date") || kind.equals("text")
-                    || kind.equals("ago") || kind.equals("wifi") || kind.equals("link") || kind.equals("battery");
+                    || kind.equals("ago") || kind.equals("wifi") || kind.equals("link") || kind.equals("battery")
+                    || kind.equals("plugin") && text.startsWith("plugin:");
             return known && (!kind.equals("ago") || epoch != 0);
         }
 
@@ -77,6 +119,7 @@ public final class Tessera {
             if (!color.isEmpty()) m.put("c", color);
             if (weak != 0) m.put("a", (double) weak);
             if (doorbell) m.put("b", 1.0);
+            if (iconOnly) m.put("o", 1.0);
             if (until != 0) m.put("x", (double) until);
             return m;
         }
@@ -468,6 +511,15 @@ public final class Tessera {
         if (op.equals("camera")) return answerPicture(m, status);
         if (op.equals("doorbell")) return doorbell(m, status);
         if (op.equals("calendar_event")) return calendarEvent(m, status);
+        if (op.equals("plugin")) {
+            String plugin = Json.str(m, "p");
+            Map<String, Object> msg = Json.obj(m.get("m"));
+            if (plugin == null || plugin.isEmpty() || msg == null) return false;
+            PluginMessages pm = pluginMessages;
+            if (pm != null) pm.message(plugin, msg);
+            status[0] = "Synced";
+            return true;
+        }
         if (op.equals("options")) return answerOptions(m, status);
         if (op.equals("history")) return answerHistory(m, status);
         if (op.equals("browse")) return answerBrowse(m, status);
@@ -831,6 +883,8 @@ public final class Tessera {
         }
         a.put("grids", grids);
         a.put("features", features);
+        a.put("plugin_api", PLUGIN_API);
+        a.put("plugins", new ArrayList<Object>(plugins));
         // What this screen can do (firmware hw.h, page_delivery.caps_of): it streams live cameras, so many tiles at once.
         Map<String, Object> caps = new LinkedHashMap<String, Object>();
         caps.put("live", true);
@@ -1275,8 +1329,15 @@ public final class Tessera {
     }
 
     /** The screensaver Tessera chose for now (layout.saver), or null for none. */
+    /**
+     * What the screensaver shows now (op `saver`), or null for none: the add-on sends `k` "" when the screensaver is off
+     * or nothing of its order is available (screen_saver.pick), and standby then shows the dimmed tiles.
+     */
     public synchronized Map<String, Object> saver() {
-        return Json.obj(layout.saver);
+        Map<String, Object> m = Json.obj(layout.saver);
+        if (m == null) return null;
+        String k = Json.str(m, "k");
+        return k == null || k.isEmpty() ? null : m;
     }
 
     // ----- keeping the layout across restarts -----

@@ -34,7 +34,7 @@ public final class Screen {
     public static final class Settings {
         public String node = "tablet";
         public String friendly = "Tablet";
-        public String board = "waveshare7b";
+        public String board = "jc1060p470v2";
         public String mac = "02:00:00:00:00:01";
         public String model = "Android tablet";
         public String manufacturer = "Android";

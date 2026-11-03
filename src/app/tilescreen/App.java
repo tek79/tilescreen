@@ -53,6 +53,13 @@ public final class App extends Application {
         super.onCreate();
         self = this;
         prefs = getSharedPreferences("settings", MODE_PRIVATE);
+        // Boards, once (0.12.0): the old list of every board becomes Automatic, the full-feature board of this tablet's
+        // shape. A board picked from the new list after this is kept.
+        if (!prefs.contains("board_scheme")) {
+            String before = prefs.getString("board", "waveshare7b");
+            prefs.edit().putString("board_choice", "auto").putInt("board_scheme", 2).apply();
+            log("board: " + before + " is now Automatic, " + board());
+        }
         Thread.setDefaultUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler() {
             final Thread.UncaughtExceptionHandler up = Thread.getDefaultUncaughtExceptionHandler();
             public void uncaughtException(Thread t, Throwable e) {
@@ -149,7 +156,54 @@ public final class App extends Application {
 
     public int rows() { return Math.max(1, Math.min(8, prefs.getInt("rows", 3))); }
 
-    public String board() { return prefs.getString("board", "waveshare7b"); }
+    /**
+     * The boards a tablet reports to Tessera: one with every feature of Tessera per shape of glass, so Tessera offers
+     * everything (light presets, template tiles, the doorbell, plugins that need a speaker). {choice, label, board id}.
+     */
+    public static final String[][] BOARDS = {
+            {"auto", "Automatic (recommended)", ""},
+            {"1.71", "1024 x 600 (1.71)", "jc1060p470v2"},
+            {"1.67", "800 x 480 (5:3)", "jc4880p443"},
+            {"1.6", "1280 x 800 (16:10)", "jc8012p4a1"},
+            {"1.78", "1280 x 720 (16:9)", "tab5"}};
+
+    public String boardChoice() { return prefs.getString("board_choice", "auto"); }
+
+    /** The board id reported to Tessera: the one picked, or for Automatic the one of this tablet's shape. */
+    public String board() {
+        String choice = boardChoice();
+        for (String[] b : BOARDS) if (b[0].equals(choice) && !b[2].isEmpty()) return b[2];
+        return autoBoard();
+    }
+
+    /**
+     * The full-feature board nearest this tablet's shape (its long side over its short one); a tablet wider than 16:9,
+     * such as the Echo Show 5 (2:1), takes the 1024 x 600 board.
+     */
+    public String autoBoard() {
+        double r = glassRatio();
+        if (r > 1.8) return "jc1060p470v2";
+        String best = "jc1060p470v2";
+        double gap = 9;
+        for (String[] b : BOARDS) {
+            if (b[2].isEmpty()) continue;
+            double d = Math.abs(Double.parseDouble(b[0]) - r);
+            if (d < gap) { gap = d; best = b[2]; }
+        }
+        return best;
+    }
+
+    /** The glass's long side over its short one, the whole display (getRealMetrics). */
+    public double glassRatio() {
+        try {
+            android.util.DisplayMetrics m = new android.util.DisplayMetrics();
+            ((android.view.WindowManager) getSystemService(WINDOW_SERVICE)).getDefaultDisplay().getRealMetrics(m);
+            int a = Math.max(m.widthPixels, m.heightPixels), b = Math.min(m.widthPixels, m.heightPixels);
+            return b > 0 ? (double) a / b : 1.71;
+        } catch (Exception e) {
+            return 1.71;
+        }
+    }
 
     /** "auto", "landscape" or "portrait". */
     public String orientation() { return prefs.getString("orientation", "landscape"); }
@@ -235,6 +289,7 @@ public final class App extends Application {
 
     private synchronized void start() {
         Tessera.liveTiles = liveTiles();
+        app.tilescreen.ui.TileView.plugins();
         Screen.Settings s = new Screen.Settings();
         s.node = node();
         s.friendly = friendly();
@@ -472,6 +527,25 @@ public final class App extends Application {
             if (!tmp.renameTo(f)) throw new IOException("rename failed");
         } catch (IOException e) {
             Log.w(TAG, "keeping the layout failed", e);
+        }
+    }
+
+    // ----- Tap sound's two sounds (assets tap.wav and step.wav, from the plugin), on the system sound stream -----
+
+    private android.media.SoundPool sounds;
+    private int tapSound, stepSound;
+
+    /** The tick of a tap, or the softer one of a step (`soft`). */
+    public synchronized void tick(boolean soft) {
+        try {
+            if (sounds == null) {
+                sounds = new android.media.SoundPool(4, android.media.AudioManager.STREAM_SYSTEM, 0);
+                tapSound = sounds.load(getAssets().openFd("tap.wav"), 1);
+                stepSound = sounds.load(getAssets().openFd("step.wav"), 1);
+            }
+            sounds.play(soft ? stepSound : tapSound, 1f, 1f, 1, 0, 1f);
+        } catch (Exception e) {
+            log("tap sound: " + e);
         }
     }
 }

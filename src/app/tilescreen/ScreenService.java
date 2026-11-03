@@ -44,9 +44,25 @@ public final class ScreenService extends Service {
         f.addAction(Intent.ACTION_TIMEZONE_CHANGED);
         registerReceiver(alarms, f);
         reportAlarm();
+        // On the charger or on battery (Screen off in standby on battery, Android brightness in standby).
+        power = new BroadcastReceiver() {
+            public void onReceive(Context context, Intent intent) { reportPower(intent); }
+        };
+        IntentFilter pf = new IntentFilter(Intent.ACTION_POWER_CONNECTED);
+        pf.addAction(Intent.ACTION_POWER_DISCONNECTED);
+        registerReceiver(power, pf);
+        reportPower(registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED)));
     }
 
-    private BroadcastReceiver alarms;
+    private BroadcastReceiver alarms, power;
+
+    private void reportPower(Intent intent) {
+        boolean on;
+        if (intent != null && Intent.ACTION_POWER_CONNECTED.equals(intent.getAction())) on = true;
+        else if (intent != null && Intent.ACTION_POWER_DISCONNECTED.equals(intent.getAction())) on = false;
+        else on = intent == null || intent.getIntExtra(android.os.BatteryManager.EXTRA_PLUGGED, 1) != 0;
+        App.get().screen().screenSettings.charging(on);
+    }
 
     private void reportAlarm() {
         try {
@@ -67,6 +83,7 @@ public final class ScreenService extends Service {
     @Override
     public void onDestroy() {
         if (alarms != null) unregisterReceiver(alarms);
+        if (power != null) unregisterReceiver(power);
         if (cpu != null) cpu.release();
         super.onDestroy();
     }

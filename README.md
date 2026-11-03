@@ -28,7 +28,7 @@ then laid out in one place.
 
 - Tessera's tiles and cards, drawn the way its firmware draws them:
   - lights (with color and effects), switches, covers, climate, media players (with their library and favorites),
-    sensors with history graphs and meters, calendars, weather, the clock tile, the energy flow card, cameras,
+    sensors with history graphs and meters, calendars, weather, the clock tile, the energy flow card, cameras (live streaming), the doorbell, light presets, template tiles, and Tessera plugins (flip clock, tap sound, waste collection, thermo dial),
     robot vacuums (map, cleaning by room, routines, suction and mop), alerts and more;
   - the screensaver with Tessera's clock faces;
   - the on-screen settings page.
@@ -41,14 +41,14 @@ then laid out in one place.
   the screen's **Showing** select.
 - A **Next alarm** sensor in Home Assistant, like the Home Assistant app's, from the tablet's alarm clock.
 
-**Not supported yet:** Tessera plugin tiles. They show their name only.
+**Plugins:** Tile Screen carries its own versions of some Tessera plugins (see the guide). Any other plugin's tile shows its name and "Plugin missing".
 
 ## Compatibility
 
 | | |
 |---|---|
 | **Android** | 5.0 (API 21) or later. Built for and tested on Android 5–7 era devices. |
-| **Tested on** | Amazon Fire 7 (5th gen, 2015) running LineageOS 14.1, rooted with Magisk. |
+| **Tested on** | Amazon Fire 7 (5th gen, 2015) running LineageOS, rooted with Magisk. |
 | | Amazon Fire 10 (7th gen, 2017) running LineageOS 14.1, rooted with Magisk. |
 | | Amazon Fire 8 (8th gen, 2018) running LineageOS 20, rooted with Magisk. |
 | | Amazon Echo Show 5 (1st gen, 2019) running LineageOS 18.1, rooted with Magisk. |

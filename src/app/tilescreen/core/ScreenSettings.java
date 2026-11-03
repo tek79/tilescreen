@@ -18,8 +18,11 @@ public final class ScreenSettings {
 
     /** What the screen shows and how bright, decided here and drawn by the app. */
     public interface Ui {
-        /** Dimmed or lit, the backlight level, and whether the screensaver stands over the tiles. */
-        void power(boolean dimmed, int level, boolean saver);
+        /**
+         * Dimmed or lit, the backlight level, whether the screensaver stands over the tiles, and whether Android's own
+         * brightness goes instead of `level` (Android brightness: awake, and in standby on the charger).
+         */
+        void power(boolean dimmed, int level, boolean saver, boolean android);
         /** The settings page and every card close, and the home page shows. */
         void goHome();
         /** The settings page and every card close. */
@@ -40,6 +43,16 @@ public final class ScreenSettings {
     private int androidSaver = 0;
     /** The app's own too: a tile's icon toggles it and a tap anywhere else opens its card. */
     private int iconToggles = 0;
+    /** The app's own too: Android's brightness (auto, if the tablet has a light sensor) while awake; standby still dims. */
+    private int systemBrightness = 0;
+    /** The app's own too: picking the tablet up (its accelerometer) wakes it from standby. */
+    private int liftWake = 0;
+    /** The app's own too: standby on battery is a dark screen, whatever the brightness settings (a portable tablet). */
+    private int batteryDark = 0;
+    /** Plugins' settings (plugin.yaml's entities, docs/PLUGINS.md "A plugin's settings"): Tap sound, Waste collection. */
+    private int tapSound = 1, wasteInBar = 1, wasteDaysAhead = 1;
+    /** Whether the tablet is on its charger now (ScreenService reads Android's battery). */
+    private boolean charging = true;
 
     private final Store store;
     private final EspDevice.Logger log;
@@ -48,7 +61,8 @@ public final class ScreenSettings {
     public volatile Runnable onSleep;
 
     private final EspDevice.Number eBrightness, eStandbyBrightness, eNightBrightness, eStandbySeconds, eAutoHomeSeconds;
-    private final EspDevice.Switch eStandby, eNight, eDark, eAutoHome, eHomeOnStandby, eSwipe, ePageButtons, eHomeButton, eAndroidSaver, eIconToggles;
+    private final EspDevice.Switch eStandby, eNight, eDark, eAutoHome, eHomeOnStandby, eSwipe, ePageButtons, eHomeButton, eAndroidSaver, eIconToggles, eSystemBrightness, eLiftWake, eBatteryDark, eTapSound, eWasteInBar;
+    private final EspDevice.Number eWasteDays;
     private final EspDevice.Time eNightStart, eNightEnd;
     private final EspDevice.Select eRotation;
 
@@ -79,6 +93,13 @@ public final class ScreenSettings {
         // Not one of Tessera's settings (its panel doesn't list it); a name of its own so it never clashes with one.
         eAndroidSaver = toggle(device, "use_android_screensaver", "Use Android screensaver", "mdi:android", "android_saver");
         eIconToggles = toggle(device, "icon_toggles_tap_opens", "Icon toggles, tap opens controls", "mdi:gesture-tap-button", "icon_toggles");
+        eSystemBrightness = toggle(device, "android_brightness_while_awake", "Android brightness", "mdi:brightness-auto", "system_brightness");
+        eBatteryDark = toggle(device, "screen_off_in_standby_on_battery", "Screen off in standby on battery", "mdi:battery-off-outline", "battery_dark");
+        // The plugins' own settings, named as their plugin.yaml names them so Tessera's editor finds them by name.
+        eTapSound = toggle(device, "tap_sound", "Tap sound", "mdi:gesture-tap-button", "tap_sound");
+        eWasteInBar = toggle(device, "waste_in_top_bar", "Waste in top bar", "mdi:recycle", "waste_in_bar");
+        eWasteDays = number(device, "waste_days_ahead", "Waste days ahead", 0, 3, 1, "", "mdi:calendar-clock", "waste_days_ahead", 1);
+        eLiftWake = toggle(device, "lift_to_wake", "Lift to wake", "mdi:cellphone-arrow-down", "lift_wake");
         eNightStart = time(device, "night_starts", "Night starts", "mdi:weather-sunset-down", "night_start");
         eNightEnd = time(device, "night_ends", "Night ends", "mdi:weather-sunset-up", "night_end");
         // A screen that isn't square turns by half turns only.
@@ -217,6 +238,12 @@ public final class ScreenSettings {
             if (androidSaver != 0) { dimmed = false; sleepRequested = false; }
             lastTouch = System.currentTimeMillis();
         } else if (key.equals("icon_toggles")) iconToggles = flag(value);
+        else if (key.equals("system_brightness")) systemBrightness = flag(value);
+        else if (key.equals("lift_wake")) liftWake = flag(value);
+        else if (key.equals("battery_dark")) batteryDark = flag(value);
+        else if (key.equals("tap_sound")) tapSound = flag(value);
+        else if (key.equals("waste_in_bar")) wasteInBar = flag(value);
+        else if (key.equals("waste_days_ahead")) wasteDaysAhead = clamp(value, 0, 3);
         else return false;
         return true;
     }
@@ -241,6 +268,12 @@ public final class ScreenSettings {
         m.put("home_button", (double) homeButton);
         m.put("android_saver", (double) androidSaver);
         m.put("icon_toggles", (double) iconToggles);
+        m.put("system_brightness", (double) systemBrightness);
+        m.put("lift_wake", (double) liftWake);
+        m.put("battery_dark", (double) batteryDark);
+        m.put("tap_sound", (double) tapSound);
+        m.put("waste_in_bar", (double) wasteInBar);
+        m.put("waste_days_ahead", (double) wasteDaysAhead);
         return Json.write(m);
     }
 
@@ -258,11 +291,13 @@ public final class ScreenSettings {
     }
 
     private void publish() {
-        int b, sb, nb, ss, ah, st, ne, nst, nen, dk, ahm, hos, sw, pb, hb, rot, as, it;
+        int b, sb, nb, ss, ah, st, ne, nst, nen, dk, ahm, hos, sw, pb, hb, rot, as, it, sys, lw, bd, ts, wb, wd;
         synchronized (this) {
             b = brightness; sb = standbyBrightness; nb = nightBrightness; ss = standbySeconds; ah = autoHomeSeconds;
             st = standbyEnabled; ne = nightEnabled; nst = nightStart; nen = nightEnd; dk = darkMode; ahm = autoHome;
             hos = homeOnStandby; sw = swipePages; pb = pageButtons; hb = homeButton; rot = rotation; as = androidSaver; it = iconToggles;
+            sys = systemBrightness; lw = liftWake; bd = batteryDark;
+            ts = tapSound; wb = wasteInBar; wd = wasteDaysAhead;
         }
         eBrightness.set(b);
         eStandbyBrightness.set(sb);
@@ -282,6 +317,12 @@ public final class ScreenSettings {
         eRotation.set(rot + "°");
         eAndroidSaver.set(as != 0);
         eIconToggles.set(it != 0);
+        eSystemBrightness.set(sys != 0);
+        eLiftWake.set(lw != 0);
+        eBatteryDark.set(bd != 0);
+        eTapSound.set(ts != 0);
+        eWasteInBar.set(wb != 0);
+        eWasteDays.set(wd);
     }
 
     // ----- what the drawing side reads -----
@@ -306,6 +347,12 @@ public final class ScreenSettings {
         if (key.equals("home_button")) return homeButton;
         if (key.equals("android_saver")) return androidSaver;
         if (key.equals("icon_toggles")) return iconToggles;
+        if (key.equals("system_brightness")) return systemBrightness;
+        if (key.equals("lift_wake")) return liftWake;
+        if (key.equals("battery_dark")) return batteryDark;
+        if (key.equals("tap_sound")) return tapSound;
+        if (key.equals("waste_in_bar")) return wasteInBar;
+        if (key.equals("waste_days_ahead")) return wasteDaysAhead;
         return -1;
     }
 
@@ -327,6 +374,35 @@ public final class ScreenSettings {
     public synchronized boolean androidSaver() { return androidSaver != 0; }
 
     public synchronized boolean iconToggles() { return iconToggles != 0; }
+
+    /** Whether Android sets the brightness: awake always, and in standby while the tablet charges. */
+    public synchronized boolean systemBrightness() { return systemBrightness != 0 && androidSaver == 0; }
+
+    /** On the charger or not (ACTION_POWER_CONNECTED and DISCONNECTED): standby looks again. */
+    public void charging(boolean on) {
+        synchronized (this) {
+            if (charging == on) return;
+            charging = on;
+        }
+        log.log(on ? "power: on the charger" : "power: on battery");
+        apply();
+    }
+
+    /** Whether picking the tablet up wakes it: only from Tessera's standby (Android's screensaver has its own). */
+    public synchronized boolean liftWake() { return liftWake != 0 && androidSaver == 0; }
+
+    /** The tablet was picked up or moved while dimmed (MainActivity's accelerometer): wake as a touch would. */
+    public void lifted() {
+        boolean was;
+        synchronized (this) {
+            was = dimmed && liftWake != 0;
+            if (was) wakeLocked();
+        }
+        if (was) {
+            log.log("wake: the tablet was picked up");
+            apply();
+        }
+    }
 
     // ----- standby (core.yaml: dim_display, wake_display, the 1 s interval, Wake and Sleep) -----
 
@@ -461,13 +537,27 @@ public final class ScreenSettings {
     private void apply() {
         Ui u = ui;
         if (u == null) return;
-        boolean d, saver;
+        boolean d, saver, android;
         int level;
         synchronized (this) {
             d = dimmed;
-            level = d ? (night(minuteOfDay()) ? nightBrightness : standbyBrightness) : brightness;
-            saver = d && !sleepRequested && level > 0;
+            boolean sys = systemBrightness != 0 && androidSaver == 0;
+            if (d && batteryDark != 0 && !charging) {
+                // Off the charger, standby is dark: no screensaver, the backlight off.
+                level = 0;
+                saver = false;
+                android = false;
+            } else if (d) {
+                level = night(minuteOfDay()) ? nightBrightness : standbyBrightness;
+                // On the charger with Android brightness, standby is Android's level (auto dims it in the dark).
+                android = sys && charging && !sleepRequested;
+                saver = !sleepRequested && (android || level > 0);
+            } else {
+                level = brightness;
+                saver = false;
+                android = sys;
+            }
         }
-        u.power(d, level, saver);
+        u.power(d, level, saver, android);
     }
 }

@@ -55,3 +55,20 @@ Fonts and icons
 
 assets/mdi.ttf: Material Design Icons by Pictogrammers (https://pictogrammers.com), Pictogrammers Free License; the
 font is distributed under the Apache License 2.0. See assets/MDI-LICENSE.
+
+Tessera plugins (ported to Java)
+--------------------------------
+
+Flip clock, Tap sound and Waste collection (https://github.com/MaxGramser/tessera-plugins)
+  Copyright (c) 2026 Max Gramser. MIT License. Tap sound's two sounds (assets/tap.wav, assets/step.wav) are the
+  plugin's own files.
+
+Thermo dial (https://github.com/alexcoscia/tessera-thermo-dial, as listed in Tessera's plugin index)
+  Copyright (c) 2026 Alex Coscia. MIT License.
+
+AV wall panel controls (https://github.com/MaxGramser/Tessera-Plugin-AV-Wall-Panel-Controls)
+  Copyright (c) 2026 MrEcosse. MIT License.
+
+Each is redrawn in Java from the plugin's C++ (its layout, rules and words); the MIT licences' notices apply to those
+parts.
+

@@ -16,6 +16,7 @@ public final class App {
     public String ip() { return "192.168.1.42"; }
     public String wifiText() { return "Home IoT · good (-61 dBm)"; }
     public String version() { return "0.5.9"; }
+    public void tick(boolean soft) { System.out.println("[sound] " + (soft ? "step" : "tap")); }
     public void restart() { System.out.println("[app] restart"); }
     public void setCanvas(int w, int h) { this.w = w; this.h = h; if (screen != null) screen.regrid(); }
     public Tessera.Shape shape() {

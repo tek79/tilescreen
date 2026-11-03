@@ -14,6 +14,8 @@ public class Paint {
     public void setAlpha(int a) { color = (color & 0xFFFFFF) | ((a & 0xFF) << 24); }
     public void setTextSize(float s) { size = s; }
     public float getTextSize() { return size; }
+    public static class FontMetrics { public float ascent, descent, top, bottom, leading; }
+    public FontMetrics getFontMetrics() { FontMetrics m = new FontMetrics(); m.ascent = -0.93f * size; m.descent = 0.24f * size; m.top = m.ascent; m.bottom = m.descent; return m; }
     public void setTypeface(Typeface t) { face = t; }
     public void setTextAlign(Align a) { align = a; }
     public void setStyle(Style s) { style = s; }

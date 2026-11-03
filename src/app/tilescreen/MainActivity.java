@@ -36,8 +36,6 @@ import app.tilescreen.ui.SaverView;
 import app.tilescreen.ui.TileView;
 
 public final class MainActivity extends Activity implements Screen.Ui, ScreenSettings.Ui, TileView.Host {
-    private static final String[] BOARDS = {"waveshare7b", "jc1060p470", "crowpanel101", "sunton8048s070", "waveshare7",
-            "jc8012p4a1", "waveshare5", "guition"};
     private static final String[] ORIENTATIONS = {"landscape", "portrait", "auto"};
 
     private final Handler main = new Handler(Looper.getMainLooper());
@@ -47,6 +45,8 @@ public final class MainActivity extends Activity implements Screen.Ui, ScreenSet
     private App app;
     private WidgetPage widgets;
     private boolean swallowing;
+    private Lift lift;
+    private boolean lastAndroid;
 
     @Override
     protected void onCreate(Bundle saved) {
@@ -58,6 +58,12 @@ public final class MainActivity extends Activity implements Screen.Ui, ScreenSet
                 | WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON);
         startService(new Intent(this, ScreenService.class));
         view = new TileView(this, this);
+        lift = new Lift(this, new Lift.Moved() {
+            public void moved(String how) {
+                app.log("lift to wake: " + how);
+                app.screen().screenSettings.lifted();
+            }
+        });
         // Standby, as a Tessera screen has it: the screensaver over the tiles, or the glass dark at a level of 0.
         SaverView.dpi = getResources().getDisplayMetrics().xdpi;
         saver = new SaverView(this);
@@ -107,7 +113,7 @@ public final class MainActivity extends Activity implements Screen.Ui, ScreenSet
         widgets.resumed();
         if (lastLevel >= 0) {
             shownLevel = -1;
-            backlight(lastLevel);
+            brightnessFor(lastAndroid, lastLevel);
         }
     }
 
@@ -219,6 +225,7 @@ public final class MainActivity extends Activity implements Screen.Ui, ScreenSet
 
     @Override
     protected void onDestroy() {
+        lift.listen(false);
         Screen s = app.screen();
         s.setUi(null);
         s.screenSettings.setUi(null);
@@ -318,15 +325,18 @@ public final class MainActivity extends Activity implements Screen.Ui, ScreenSet
 
     // ----- ScreenSettings.Ui -----
 
-    public void power(final boolean dimmed, final int level, final boolean showSaver) {
+    public void power(final boolean dimmed, final int level, final boolean showSaver, final boolean android) {
         main.post(new Runnable() {
             public void run() {
                 // The screensaver only when Tessera chose one; without, standby shows the tiles dimmed.
                 boolean chosen = showSaver && app.screen().tessera.saver() != null;
                 saver.setVisibility(chosen ? View.VISIBLE : View.GONE);
-                dark.setVisibility(dimmed && level == 0 ? View.VISIBLE : View.GONE);
+                dark.setVisibility(dimmed && level == 0 && !android ? View.VISIBLE : View.GONE);
                 lastLevel = level;
-                backlight(level);
+                lastAndroid = android;
+                brightnessFor(android, level);
+                // Lift to wake listens only while the screen is dimmed.
+                lift.listen(dimmed && app.screen().screenSettings.liftWake());
                 if (!dimmed) immersive();
             }
         });
@@ -477,15 +487,50 @@ public final class MainActivity extends Activity implements Screen.Ui, ScreenSet
      * backlight is far brighter at half its drive than it looks dim, so 20 % has to drive it at about 3 %. With root,
      * the backlight is also written directly, and 0 turns it off rather than to Android's lowest level.
      */
+    /**
+     * The backlight: Android's own (its slider, or auto-brightness on a tablet with a light sensor) where Android
+     * brightness has it (awake, and standby on the charger), else the app's level.
+     */
+    private void brightnessFor(boolean android, int level) {
+        if (android) handBack();
+        else backlight(level);
+    }
+
+    /** The window lets go of the brightness, and Android sets it again from its own setting. */
+    private void handBack() {
+        setWindowBrightness(WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE);
+        if (shownLevel == -2) return;
+        shownLevel = -2;
+        final android.content.ContentResolver cr = getContentResolver();
+        new Thread(new Runnable() {
+            public void run() {
+                try { Thread.sleep(700); } catch (InterruptedException ignored) {}
+                int mode = android.provider.Settings.System.getInt(cr, android.provider.Settings.System.SCREEN_BRIGHTNESS_MODE, 0);
+                int set = android.provider.Settings.System.getInt(cr, android.provider.Settings.System.SCREEN_BRIGHTNESS, 128);
+                // Standby wrote 0 to the panel past Android with root; should Android not write its level again, its
+                // own setting goes in.
+                if (Root.available() && "0".equals(Root.readBacklight()) && shownLevel == -2) {
+                    Root.writeBacklight(Math.max(1, Math.round(set / 255f * Root.max())));
+                }
+                app.log("brightness: Android's own (" + (mode == 1 ? "auto" : "slider " + Math.round(set / 2.55f) + "%")
+                        + "), backlight now " + Root.readBacklight() + "/" + Root.max());
+            }
+        }, "backlight").start();
+    }
+
     private void backlight(final int level) {
         final float drive = perceived(level);
         setWindowBrightness(level <= 0 ? 0f : Math.max(0.004f, drive));
-        if (level == shownLevel) return;
+        final boolean changed = level != shownLevel;
         shownLevel = level;
+        // With root the panel's own level goes in too, every time: Android writes its own (its least, for a window
+        // brightness of 0) whenever the window's brightness is set again, which undid a standby of 0 after a while.
         new Thread(new Runnable() {
             public void run() {
                 boolean rooted = Root.available();
+                try { Thread.sleep(300); } catch (InterruptedException ignored) {}
                 if (rooted) Root.writeBacklight(Math.round(drive * Root.max()));
+                if (!changed) return;
                 try { Thread.sleep(400); } catch (InterruptedException ignored) {}
                 app.log("brightness " + level + "% -> drive " + Math.round(drive * 1000) / 10f + "%, backlight now "
                         + Root.readBacklight() + "/" + Root.max() + (rooted ? " (root)" : ""));
@@ -531,10 +576,15 @@ public final class MainActivity extends Activity implements Screen.Ui, ScreenSet
         orient.setSelection(Math.max(0, indexOf(ORIENTATIONS, app.orientation())));
         box.addView(orient);
 
-        label(box, "Board to report to Tessera");
+        label(box, "Screen shape (the board reported to Tessera)");
         final Spinner board = new Spinner(this);
-        board.setAdapter(new ArrayAdapter<String>(this, android.R.layout.simple_spinner_dropdown_item, BOARDS));
-        board.setSelection(Math.max(0, indexOf(BOARDS, app.board())));
+        final String[] boardLabels = new String[App.BOARDS.length], boardChoices = new String[App.BOARDS.length];
+        for (int i = 0; i < App.BOARDS.length; i++) {
+            boardChoices[i] = App.BOARDS[i][0];
+            boardLabels[i] = App.BOARDS[i][1] + " - " + (App.BOARDS[i][2].isEmpty() ? app.autoBoard() : App.BOARDS[i][2]);
+        }
+        board.setAdapter(new ArrayAdapter<String>(this, android.R.layout.simple_spinner_dropdown_item, boardLabels));
+        board.setSelection(Math.max(0, indexOf(boardChoices, app.boardChoice())));
         box.addView(board);
 
         final CheckBox boot = new CheckBox(this);
@@ -633,7 +683,7 @@ public final class MainActivity extends Activity implements Screen.Ui, ScreenSet
                         e.putInt("columns", clamp(cols.getText().toString(), 1, 8, app.columns()));
                         e.putInt("rows", clamp(rows.getText().toString(), 1, 8, app.rows()));
                         e.putString("orientation", ORIENTATIONS[orient.getSelectedItemPosition()]);
-                        e.putString("board", BOARDS[board.getSelectedItemPosition()]);
+                        e.putString("board_choice", boardChoices[board.getSelectedItemPosition()]);
                         e.putBoolean("open_on_boot", boot.isChecked());
                         e.putBoolean("widget_page", widgetPage.isChecked());
                         e.putInt("live_tiles", clamp(live.getText().toString(), 0, 8, app.liveTiles()));

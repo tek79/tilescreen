@@ -97,7 +97,9 @@ final class SettingsPage {
     private List<Row> rows(String g, ScreenSettings s, final Host host) {
         List<Row> out = new ArrayList<Row>();
         if (g.equals(LIGHT)) {
-            out.add(number("Brightness", "brightness", 5, 100, 5, "%"));
+            Row bright = number("Brightness", "brightness", 5, 100, 5, "%");
+            bright.enabled = s.get("system_brightness") == 0 || s.get("android_saver") != 0;
+            out.add(bright);
             out.add(row(TOGGLE, "Dark mode", "dark_mode"));
             Row android = row(TOGGLE, "Use Android screensaver", "android_saver");
             out.add(row(TOGGLE, "Auto standby", "standby_enabled"));
@@ -107,6 +109,15 @@ final class SettingsPage {
             out.get(out.size() - 1).enabled = s.get("android_saver") == 0;
             out.add(after);
             out.add(dim);
+            Row lift = row(TOGGLE, "Lift to wake", "lift_wake");
+            lift.enabled = s.get("android_saver") == 0;
+            out.add(lift);
+            Row system = row(TOGGLE, "Android brightness", "system_brightness");
+            system.enabled = s.get("android_saver") == 0;
+            out.add(system);
+            Row battery = row(TOGGLE, "Screen off in standby on battery", "battery_dark");
+            battery.enabled = s.get("android_saver") == 0;
+            out.add(battery);
             out.add(android);
         } else if (g.equals(NIGHT)) {
             out.add(row(TOGGLE, "Night mode", "night_enabled"));
@@ -126,6 +137,10 @@ final class SettingsPage {
             out.add(row(TOGGLE, "Page buttons", "page_buttons"));
             out.add(row(TOGGLE, "Show home button", "home_button"));
             out.add(row(TOGGLE, "Icon toggles, tap opens controls", "icon_toggles"));
+            // The settings of the plugins this app draws (tap_sound, waste_collection).
+            out.add(row(TOGGLE, "Tap sound", "tap_sound"));
+            out.add(row(TOGGLE, "Waste in top bar", "waste_in_bar"));
+            out.add(number("Waste days ahead", "waste_days_ahead", 0, 3, 1, ""));
             out.add(row(ROTATION, "Rotation", "rotation"));
         } else if (g.equals(ABOUT)) {
             App app = App.get();

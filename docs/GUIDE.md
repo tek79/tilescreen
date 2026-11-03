@@ -8,7 +8,7 @@ It is built for low-memory tablets such as the 5th-gen Fire 7 running LineageOS.
 view and no Home Assistant app inside it: a small native app draws the tiles itself. It should run
 on Android 5.0 and later.
 
-This guide covers version 0.10.1.
+This guide covers version 0.12.0.
 
 ## 1. Install it on the tablet
 
@@ -57,7 +57,7 @@ layout through restarts.
 - **Long-press the title** at top left, or **swipe down from the top edge** (with Swipe between pages on), for the
   screen's settings page, as on a Tessera panel: Brightness, Night, Screen and This screen. A `screen.settings` tile
   and Home Assistant's `esphome.<name>_open_settings` open it too.
-- **This screen → Tablet settings** opens this app's own settings: name, grid size, orientation, the board
+- **This screen → Tablet settings** opens this app's own settings: name, grid size, orientation, the screen shape
   reported to Tessera, the encryption key, a log, and a way out to Android's settings.
 - Tessera's alerts (`esphome.<name>_show_alert` and `_show_alert_choice`) and `_show_page` work.
   So does `esphome.screen_alert` when an alert is answered.
@@ -98,6 +98,25 @@ look (dark, light, or following Dark mode), the numbers on Glass and the seconds
 **Screensaver** card. Glass and Classic drift a millimetre along a slow circle every minute; Bauhaus changes
 one square every minute and the whole picture every ten, and its clock moves with it.
 
+### Android brightness
+
+Turn on **Android brightness** (on the screen's settings page or its switch in Home Assistant) and the app leaves the
+brightness to Android: its slider, or auto-brightness on a tablet with a light sensor (Display → Adaptive brightness).
+Tessera's **Brightness** is then not used. Awake, the brightness is always Android's; in standby it is Android's while
+the tablet is on its charger (the screensaver dims itself in a dark room), and the standby brightness on battery.
+
+### Screen off in standby on battery
+
+For a tablet you carry around: with **Screen off in standby on battery** on, standby off the charger is always a dark
+screen with the backlight off, whatever the brightness settings say, and no screensaver is drawn. Put it on the charger
+and standby shows the screensaver again; the change takes effect at once, also in standby. With Lift to wake, picking it
+up still wakes it.
+
+### Lift to wake
+
+Turn on **Lift to wake** and picking the tablet up, tilting it or knocking it wakes it from standby, as a touch does. The
+accelerometer is read only while the screen is in standby.
+
 ### Use Android screensaver
 
 This switch is the app's own (Tessera's settings panel doesn't show it; find it on the device's page in Home
@@ -128,7 +147,7 @@ clock tile (dial, analog, flip and digital), the energy card (live power from Ho
 people set to **Map**, a camera full size in its card, pastel tile colors, top bar items, multiple
 pages, hidden detail pages, custom tap actions, alerts, the doorbell, the screensaver (with a player's play and volume keys over its cover), and Tessera's screen settings.
 
-Not drawn yet: plugin tiles. Those tiles show their name, and their card says so.
+Plugins: the ones listed under **Plugins** below. A tile of any other plugin shows its icon, its name and "Plugin missing".
 
 Other limits:
 
@@ -136,12 +155,42 @@ Other limits:
   them with an event.
 - The tablet reports firmware 0.58.0, the version whose features it draws. Tessera may offer a newer firmware
   update for the screen; ignore it, there is no ESP32 to flash, and Tessera stops at "no profile" anyway.
-- The tablet reports itself to Tessera as a `waveshare7b` (a 1024×600 board), so the editor's
-  preview fits and Tessera sends it pictures. Change it under settings if you like.
+- The tablet reports itself to Tessera as one of four boards that have every Tessera feature, the one nearest its
+  screen's shape, so the editor's preview fits and Tessera offers everything (plugins that need a speaker too).
+  **Tablet settings → Screen shape** is **Automatic** unless you pick one:
+
+  | Shape | Board | For |
+  |---|---|---|
+  | 1024 x 600 (1.71) | `jc1060p470v2` | most 7-inch tablets, and anything wider than 16:9 (the Echo Show 5) |
+  | 800 x 480 (5:3) | `jc4880p443` | 5:3 tablets |
+  | 1280 x 800 (16:10) | `jc8012p4a1` | 16:10 tablets, 1920 x 1200 too |
+  | 1280 x 720 (16:9) | `tab5` | 16:9 tablets |
+
+  The editor draws its preview at that board's size, so on the two small boards (4.3 and 5 inches) its text looks larger
+  than on the tablet. The grid is the tablet's own whatever the board. Tessera also offers plugins for hardware a tablet
+  lacks (Voice assist, Bluetooth proxy, Screen camera); added, they show as not running.
 - The grid defaults to 4×3 in landscape (3×4 in portrait). Choose it in Tessera's editor (the screen's Settings → Grid, from 1×1 to 8×8, and Landscape or Portrait), as for an ESP32 screen; the tablet takes it when you save. The tablet's own settings set the landscape grid too.
 - **Deleting the screen from Home Assistant:** the tablet keeps its encryption key. To add it again,
   long-press the title, then **This screen → Tablet settings → Forget encryption key**. The settings also show the key, in case you
   add the screen by hand.
+
+## Plugins
+
+Tessera's plugins are code built into an ESP32 screen's firmware, so Tile Screen carries its own versions of the ones
+below, each drawing what the plugin draws. Add a plugin to the tablet as to any screen: in Tessera's **Plugins** page,
+choose the plugin and tick the tablet. Tessera builds nothing for a tablet (it has no firmware profile of it); it records
+the plugin as on and reads from the tablet's hello that it runs it. Then place its tiles from the library's Plugins
+group, or pick its face in the Screensaver card.
+
+| Plugin | Version | What you get |
+|---|---|---|
+| Flip clock | 0.1.0 | A face of the screensaver's clock: hours and minutes on two flip cards, a seconds dot, the date and the outside temperature. Pick it under Face in the Clock's drawer of the Screensaver card. |
+| Tap sound | 0.2.1 | A soft tick for every tap, a softer one for each step of a dragged slider or a held key, on Android's system volume. Switch it off with **Tap sound** (the screen's settings page, or its switch in Home Assistant). Tessera offers it only to a screen whose board has a speaker, which every board the tablet reports has. |
+| Waste collection | 1.0.7 | A tile with the next collection ("Paper", "Tomorrow"), a card with four weeks of collections (a tap on the tile, or a calendar tile whose tap is set to it), and a top bar item ("Tomorrow: Paper") with **Waste in top bar** and **Waste days ahead**. The top bar reads the calendar of the first Next collection tile of the layout. |
+| Thermo dial | 0.2.0 | A climate tile with the target large and - / mode / + keys, and a card with a dial to drag; the target goes to Home Assistant when you let go (the keys after 600 ms). |
+| AV wall panel controls | 0.1.0 | Five tiles of keys: transport, D-pad, volume or channel, a number pad and a selector grid. Each key runs the action typed for it in the editor, such as `remote.send_command command=UP`. |
+
+A plugin's tiles use the tablet's permission to perform Home Assistant actions, as every control does.
 
 ## Live cameras
 
