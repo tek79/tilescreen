@@ -63,7 +63,10 @@ final class Style {
         if (d.equals("climate")) return !s.equals("off") && !s.equals("unavailable");
         if (d.equals("cover")) return s.equals("open") || s.equals("opening");
         if (d.equals("lock")) return s.equals("unlocked") || s.equals("open");
-        if (d.equals("media_player")) return s.equals("playing");
+        // Home Assistant's stateActive(), as Tessera's Tile::active: a player is active in every state but off, standby,
+        // unknown and unavailable, so a TV or a receiver that is on shows its colour.
+        if (d.equals("media_player")) return !s.isEmpty() && !s.equals("off") && !s.equals("standby")
+                && !s.equals("unknown") && !s.equals("unavailable");
         if (d.equals("alarm_control_panel")) return s.startsWith("armed") || s.equals("triggered");
         if (d.equals("person") || d.equals("device_tracker")) return s.equals("home");
         if (d.equals("timer")) return s.equals("active");
@@ -102,7 +105,7 @@ final class Style {
         if (d.equals("cover") || d.equals("person") || d.equals("device_tracker")) return GREEN;
         if (d.equals("lock")) return "locked".equals(t.state) ? GREEN : RED;
         if (d.equals("alarm_control_panel")) return "triggered".equals(t.state) ? RED : GREEN;
-        if (d.equals("media_player")) return PURPLE;
+        if (d.equals("media_player")) return BLUE;
         if (d.equals("binary_sensor")) return ORANGE;
         if (d.equals("fan") || d.equals("humidifier")) return TEAL;
         return BLUE;
