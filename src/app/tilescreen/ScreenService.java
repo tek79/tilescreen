@@ -39,8 +39,9 @@ public final class ScreenService extends Service {
         alarms = new BroadcastReceiver() {
             public void onReceive(Context context, Intent intent) { reportAlarm(); }
         };
-        IntentFilter f = new IntentFilter(AlarmManager.ACTION_NEXT_ALARM_CLOCK_CHANGED);
-        f.addAction(Intent.ACTION_TIME_CHANGED);
+        IntentFilter f = new IntentFilter(Intent.ACTION_TIME_CHANGED);
+        // Android 5+ says when an alarm app changes the next alarm; before that there is no next alarm to read.
+        if (android.os.Build.VERSION.SDK_INT >= 21) f.addAction(AlarmManager.ACTION_NEXT_ALARM_CLOCK_CHANGED);
         f.addAction(Intent.ACTION_TIMEZONE_CHANGED);
         registerReceiver(alarms, f);
         reportAlarm();
@@ -68,6 +69,7 @@ public final class ScreenService extends Service {
     }
 
     private void reportAlarm() {
+        if (android.os.Build.VERSION.SDK_INT < 21) return;
         try {
             AlarmManager am = (AlarmManager) getSystemService(ALARM_SERVICE);
             AlarmManager.AlarmClockInfo next = am.getNextAlarmClock();

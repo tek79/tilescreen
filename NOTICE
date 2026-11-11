@@ -66,7 +66,7 @@ Flip clock, Tap sound and Waste collection (https://github.com/MaxGramser/tesser
 Thermo dial (https://github.com/alexcoscia/tessera-thermo-dial, as listed in Tessera's plugin index)
   Copyright (c) 2026 Alex Coscia. MIT License.
 
-AV wall panel controls (https://github.com/MaxGramser/Tessera-Plugin-AV-Wall-Panel-Controls)
+AV wall panel controls (https://github.com/MrEcosse/Tessera-Plugin-AV-Wall-Panel-Controls)
   Copyright (c) 2026 MrEcosse. MIT License.
 
 Each is redrawn in Java from the plugin's C++ (its layout, rules and words); the MIT licences' notices apply to those

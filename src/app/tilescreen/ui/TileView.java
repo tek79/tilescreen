@@ -739,10 +739,12 @@ public final class TileView extends View {
     }
 
     private int battery() {
+        // The battery's last broadcast (App.battery), which every Android has; BatteryManager's property is Android 5+.
+        if (Tessera.batteryLevel >= 0) return Tessera.batteryLevel;
         try {
             BatteryManager bm = (BatteryManager) getContext().getSystemService(Context.BATTERY_SERVICE);
             return bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY);
-        } catch (Exception e) {
+        } catch (Throwable e) {
             return -1;
         }
     }

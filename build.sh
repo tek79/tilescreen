@@ -8,7 +8,7 @@ rm -rf $OUT && mkdir -p $OUT/gen $OUT/classes
 aapt package -f -m -J $OUT/gen -M AndroidManifest.xml -S res -A assets -I $JAR -F $OUT/base.apk
 javac -Xlint:-options --release 8 -encoding UTF-8 -classpath $JAR -d $OUT/classes \
     $(find src $OUT/gen -name '*.java')
-dalvik-exchange --dex --min-sdk-version=21 --output=$OUT/classes.dex $OUT/classes
+dalvik-exchange --dex --min-sdk-version=17 --output=$OUT/classes.dex $OUT/classes
 (cd $OUT && aapt add -f base.apk classes.dex >/dev/null)
 zipalign -f -p 4 $OUT/base.apk $OUT/aligned.apk
 KS=${KEYSTORE:-tilescreen.jks}

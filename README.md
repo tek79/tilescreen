@@ -28,7 +28,7 @@ then laid out in one place.
 
 - Tessera's tiles and cards, drawn the way its firmware draws them:
   - lights (with color and effects), switches, covers, climate, media players (with their library and favorites),
-    sensors with history graphs and meters, calendars, weather, the clock tile, the energy flow card, cameras (live streaming), the doorbell, light presets, template tiles, and Tessera plugins (flip clock, tap sound, waste collection, thermo dial),
+    sensors with history graphs and meters, calendars, weather, the clock tile, the energy flow card, cameras (live streaming), the doorbell, light presets, template tiles, and Tessera plugins (flip clock, tap sound, waste collection, thermo dial, AV wall panel controls),
     robot vacuums (map, cleaning by room, routines, suction and mop), alerts and more;
   - the screensaver with Tessera's clock faces;
   - the on-screen settings page.
@@ -41,18 +41,21 @@ then laid out in one place.
   the screen's **Showing** select.
 - A **Next alarm** sensor in Home Assistant, like the Home Assistant app's, from the tablet's alarm clock.
 
-**Plugins:** Tile Screen carries its own versions of some Tessera plugins (see the guide). Any other plugin's tile shows its name and "Plugin missing".
+**Plugins:** Tile Screen carries its own versions of five Tessera plugins (see the guide). Any other plugin's tile shows its name and "Plugin missing".
 
 ## Compatibility
 
 | | |
 |---|---|
-| **Android** | 5.0 (API 21) or later. Built for and tested on Android 5–7 era devices. |
+| **Android** | 4.2 (API 17) or later. Built for and tested on Android 5–7 era devices; see the guide for what Android 4 lacks. |
 | **Tested on** | Amazon Fire 7 (5th gen, 2015) running LineageOS 14.1, rooted with Magisk. |
 | | Amazon Fire 10 (7th gen, 2017) running LineageOS 14.1, rooted with Magisk. |
 | | Amazon Fire 8 (8th gen, 2018) running LineageOS 20, rooted with Magisk. |
 | | Amazon Echo Show 5 (1st gen, 2019) running LineageOS 18.1, rooted with Magisk. |
 | | Samsung Galaxy Tab E (SM-T560NU, 2015) running LineageOS 20, rooted with Magisk. |
+| | Asus ZenPad 8.0 (Z380M) running Android 7.0. |
+| | Asus ZenPad 8 S (Z580C) running Android 6.0.1. |
+| | Grandstream GXV3275 running Android 4.2.2. |
 | **Should work on** | Most Android tablets and phones. Landscape is the default; portrait is supported. |
 | **Memory** | Designed for 1 GB of RAM and less. |
 | **Home Assistant** | Any recent version with the ESPHome integration. |

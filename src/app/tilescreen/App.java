@@ -551,6 +551,7 @@ public final class App extends Application {
                 : plugged == android.os.BatteryManager.BATTERY_PLUGGED_USB ? "usb"
                 : plugged == android.os.BatteryManager.BATTERY_PLUGGED_WIRELESS ? "wireless" : "none";
         Tessera.hasBattery = true;
+        Tessera.batteryLevel = Math.round(level * 100f / scale);
         s.battery(Math.round(level * 100f / scale), state, charger);
     }
 

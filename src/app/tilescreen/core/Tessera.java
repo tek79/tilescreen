@@ -33,6 +33,8 @@ public final class Tessera {
 
     /** Whether this tablet has a battery (Android's BatteryManager): the hello says `battery`. */
     public static volatile boolean hasBattery;
+    /** The battery's level in percent from its last broadcast, -1 before one. */
+    public static volatile int batteryLevel = -1;
 
     /**
      * The plugins this app draws (docs/PLUGINS.md, "Negotiation"): the plugin API it speaks and, per plugin, its id, the

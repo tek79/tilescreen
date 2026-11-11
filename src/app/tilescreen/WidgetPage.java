@@ -211,7 +211,7 @@ final class WidgetPage extends FrameLayout {
         } catch (Exception e) {
             app = info.provider.getPackageName();
         }
-        String own = info.loadLabel(pm);
+        String own = android.os.Build.VERSION.SDK_INT >= 21 ? info.loadLabel(pm) : info.label;
         return own == null || own.equals(app) ? app : app + ": " + own;
     }
 
@@ -267,7 +267,15 @@ final class WidgetPage extends FrameLayout {
             try {
                 // Through the widget host, as a launcher does: a setup screen is seldom exported, and only the host may
                 // open it (AppWidgetHost.startAppWidgetConfigureActivityForResult, Android 5+).
-                widgets.startAppWidgetConfigureActivityForResult(activity, id, 0, REQUEST_CONFIGURE, null);
+                if (android.os.Build.VERSION.SDK_INT >= 21) {
+                    widgets.startAppWidgetConfigureActivityForResult(activity, id, 0, REQUEST_CONFIGURE, null);
+                } else {
+                    // Before Android 5 the host opens it itself, as launchers then did.
+                    android.content.Intent i = new android.content.Intent(android.appwidget.AppWidgetManager.ACTION_APPWIDGET_CONFIGURE);
+                    i.setComponent(info.configure);
+                    i.putExtra(android.appwidget.AppWidgetManager.EXTRA_APPWIDGET_ID, id);
+                    activity.startActivityForResult(i, REQUEST_CONFIGURE);
+                }
                 return;
             } catch (Exception e) {
                 App.get().log("widgets: its setup couldn't open (" + e + "); adding it as it is");

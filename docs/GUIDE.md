@@ -6,9 +6,9 @@ same protocol, so you lay out pages and tiles in Tessera's editor and they appea
 
 It is built for low-memory tablets such as the 5th-gen Fire 7 running LineageOS. There is no web
 view and no Home Assistant app inside it: a small native app draws the tiles itself. It should run
-on Android 5.0 and later.
+on Android 4.2 and later.
 
-This guide covers version 0.12.2.
+This guide covers version 0.13.0.
 
 ## 1. Install it on the tablet
 
@@ -18,7 +18,8 @@ You need to sideload the APK once per tablet. Pick whichever way is easier.
 1. Get `TileScreen.apk` onto the tablet: email it to yourself, put it on a USB stick, or download it.
 2. On LineageOS, open Settings → Security and turn on **Unknown sources**. On newer versions,
    Android asks when you open the file and lets you allow your file manager.
-3. Open the APK in the Files app and tap **Install**.
+3. Open the APK in the Files app and tap **Install**. On Android 6, the file browser in Settings → Storage may say
+   it can't open the file; open it from the tablet maker's own file manager instead.
 
 **With a computer (adb)**
 1. On the tablet, open Settings → About tablet and tap **Build number** seven times. Then open
@@ -84,7 +85,9 @@ device. Change them in Tessera (open the screen, then **Settings**) or from Home
   camera, photos, or the clock), or the dimmed tiles when none is picked. A touch wakes it, and that
   first touch does nothing else.
 - **Night mode**, **Night starts**, **Night ends**, **Night brightness**: standby in the night hours dims
-  to the night brightness instead. 0 turns the glass dark.
+  to the night brightness instead. 0 turns the glass dark. As on a Tessera panel, night brightness is a standby level
+  only: the lit screen keeps Brightness at night. With **Android brightness** on and the tablet charging, standby
+  takes Android's level instead, so night brightness then applies only off the charger.
 - **Back to page 1** and **Back to page 1 after**, and **Back to page 1 on standby**
 - **Swipe between pages**, **Page buttons** (the Previous and Next bar), **Show home button**, **Rotation**
   (0° or 180°)
@@ -139,6 +142,12 @@ A new screen starts from Tessera's defaults (standby after 10 minutes at 20%, ni
 
 ## What works and what doesn't yet
 
+**On Android 4.2–4.4** everything works, with three differences. Android only shares the next alarm from Android 5, so
+the **Next alarm** sensor stays unknown. Before Android 4.4 the navigation bar can't be hidden for good: the app hides
+the status bar and dims the navigation bar instead. And landscape and portrait turn with the tablet even when
+Auto-rotate is off, since Android 4.2 has no setting to tell the app otherwise. Old tablets are slow too, so live
+camera tiles may update less often.
+
 Drawn: lights (with their colour, white shade and effects page: effect, palette, preset, speed and the like, and their presets), switches, fans, input booleans, scenes, scripts, buttons, automations, covers
 (open/stop/close, position, tilt), climate (−/+, the big two-row setpoint, the mode bar), humidifiers,
 calendars (every view of the tile, the full screen with Up next, Day, Week and Month, Free or busy, and a room's sign with its booking keys), sensors with the meter display (ring, tape, bar), sensors and binary sensors (their card shows the history of the last hour, day or week, a line for numbers and a timeline for states), numbers and selects, media players (volume and mute, playback keys,
@@ -188,7 +197,7 @@ group, or pick its face in the Screensaver card.
 | Tap sound | 0.2.1 | A soft tick for every tap, a softer one for each step of a dragged slider or a held key, on Android's system volume. Switch it off with **Tap sound** (the screen's settings page, or its switch in Home Assistant). Tessera offers it only to a screen whose board has a speaker, which every board the tablet reports has. |
 | Waste collection | 1.0.7 | A tile with the next collection ("Paper", "Tomorrow"), a card with four weeks of collections (a tap on the tile, or a calendar tile whose tap is set to it), and a top bar item ("Tomorrow: Paper") with **Waste in top bar** and **Waste days ahead**. The top bar reads the calendar of the first Next collection tile of the layout. |
 | Thermo dial | 0.2.0 | A climate tile with the target large and - / mode / + keys, and a card with a dial to drag; the target goes to Home Assistant when you let go (the keys after 600 ms). |
-| AV wall panel controls | 0.1.0 | Five tiles of keys: transport, D-pad, volume or channel, a number pad and a selector grid. Each key runs the action typed for it in the editor, such as `remote.send_command command=UP`. |
+| AV wall panel controls | 0.1.1 | Five tiles of keys: transport, D-pad, volume or channel, a number pad and a selector grid. Each key runs the action typed for it in the editor, such as `remote.send_command command=UP`. |
 
 A plugin's tiles use the tablet's permission to perform Home Assistant actions, as every control does.
 
@@ -295,7 +304,8 @@ Easier is Tessera's own event, which needs only a title and finds the screens by
 
 The screen's device in Home Assistant has a **Next alarm** sensor, a timestamp like the Home Assistant app's
 `next_alarm`, from the tablet's alarm clock (any alarm app that sets Android's alarm clock), and a **Next alarm app**
-diagnostic with the app that set it. With no alarm set, it is unknown.
+diagnostic with the app that set it. With no alarm set, it is unknown. Android only shares the next alarm from
+Android 5 on, so on Android 4 it stays unknown.
 
 ## If something goes wrong
 

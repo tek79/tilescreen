@@ -13,7 +13,7 @@ import java.util.Map;
 import app.tilescreen.core.Json;
 
 /**
- * AV wall panel controls (MrEcosse/Tessera-Plugin-AV-Wall-Panel-Controls 0.1.0): five tiles of keys for a panel on the
+ * AV wall panel controls (MrEcosse/Tessera-Plugin-AV-Wall-Panel-Controls 0.1.1): five tiles of keys for a panel on the
  * wall. Transport (skip back, stop, play, pause, play/pause, skip forward, eject), a D-pad (arrows round OK, with back,
  * home, menu and guide), volume or channel keys, a number pad, and a selector grid of an entity's options. Every key runs
  * the action typed for it ("service [entity] [field=value]", panel_command.h); a key lights blue while its action goes
@@ -21,7 +21,7 @@ import app.tilescreen.core.Json;
  * than half again its height.
  */
 final class AvPanelPlugin extends PluginKit.Plugin {
-    AvPanelPlugin() { super("av_wall_panel_controls", "0.1.0"); }
+    AvPanelPlugin() { super("av_wall_panel_controls", "0.1.1"); }
 
     @Override
     String[] tiles() { return new String[]{"transport", "dpad", "volume", "numpad", "grid"}; }
