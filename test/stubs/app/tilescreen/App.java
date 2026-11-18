@@ -23,6 +23,7 @@ public final class App {
         return new Tessera.Shape() {
             public int width() { return w; } public int height() { return h; }
             public int columns() { return h > w ? rows : cols; } public int rows() { return h > w ? cols : rows; }
+            public boolean upright() { return h > w; } public boolean square() { return false; }
             public int[] kept(boolean upright) { return upright ? new int[]{rows, cols} : new int[]{cols, rows}; }
             public void choose(boolean upright, int c, int r) { System.out.println("[app] grid " + c + "x" + r + (upright ? " standing" : " lying")); if (!upright) { cols = c; rows = r; } if (screen != null) screen.regrid(); }
         };

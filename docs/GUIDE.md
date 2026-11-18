@@ -8,7 +8,7 @@ It is built for low-memory tablets such as the 5th-gen Fire 7 running LineageOS.
 view and no Home Assistant app inside it: a small native app draws the tiles itself. It should run
 on Android 4.2 and later.
 
-This guide covers version 0.13.0.
+This guide covers version 0.14.0.
 
 ## 1. Install it on the tablet
 
@@ -164,20 +164,23 @@ Other limits:
   them with an event.
 - The tablet reports firmware 0.58.0, the version whose features it draws. Tessera may offer a newer firmware
   update for the screen; ignore it, there is no ESP32 to flash, and Tessera stops at "no profile" anyway.
-- The tablet reports itself to Tessera as one of four boards that have every Tessera feature, the one nearest its
-  screen's shape, so the editor's preview fits and Tessera offers everything (plugins that need a speaker too).
-  **Tablet settings → Screen shape** is **Automatic** unless you pick one:
+- The tablet reports itself to Tessera as one of five boards with every Tessera feature, one per screen shape, so the
+  editor's preview fits and Tessera offers everything (plugins that need a speaker too). On its first start the app
+  picks the shape nearest the tablet's screen and keeps it; **Tablet settings → Screen shape** changes it (the shape
+  found is marked *this tablet's shape*):
 
   | Shape | Board | For |
   |---|---|---|
-  | 1024 x 600 (1.71) | `jc1060p470v2` | most 7-inch tablets, and anything wider than 16:9 (the Echo Show 5) |
+  | Square, 720 x 720 (1:1) | `wavesharep4` | square panels (480 x 480 or 720 x 720, such as the Sonoff NSPanel Pro) |
+  | 1280 x 800 (16:10) | `jc8012p4a1` | 16:10 tablets, 1920 x 1200 too, and 4:3 ones |
   | 800 x 480 (5:3) | `jc4880p443` | 5:3 tablets |
-  | 1280 x 800 (16:10) | `jc8012p4a1` | 16:10 tablets, 1920 x 1200 too |
+  | 1024 x 600 (1.71) | `jc1060p470v2` | most 7-inch tablets, and anything wider than 16:9 (the Echo Show 5) |
   | 1280 x 720 (16:9) | `tab5` | 16:9 tablets |
 
-  The editor draws its preview at that board's size, so on the two small boards (4.3 and 5 inches) its text looks larger
-  than on the tablet. The grid is the tablet's own whatever the board. Tessera also offers plugins for hardware a tablet
-  lacks (Voice assist, Bluetooth proxy, Screen camera); added, they show as not running.
+  The shape only sets the editor's preview and what Tessera offers: the tablet draws at its own size, so the editor's
+  text can look larger or smaller than on the tablet. Changing the shape doesn't change the grid. Tessera also offers
+  plugins for hardware a tablet lacks (Voice assist, Bluetooth proxy, Screen camera); added, they show as not running.
+- A square screen has one grid whichever way it hangs, as Tessera's square boards, and starts at Tessera's 2×3.
 - The grid defaults to 4×3 in landscape (3×4 in portrait). Choose it in Tessera's editor (the screen's Settings → Grid, from 1×1 to 8×8, and Landscape or Portrait), as for an ESP32 screen; the tablet takes it when you save. The tablet's own settings set the landscape grid too.
 - **Deleting the screen from Home Assistant:** the tablet keeps its encryption key. To add it again,
   long-press the title, then **This screen → Tablet settings → Forget encryption key**. The settings also show the key, in case you

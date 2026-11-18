@@ -640,7 +640,7 @@ public final class MainActivity extends Activity implements Screen.Ui, ScreenSet
         final String[] boardLabels = new String[App.BOARDS.length], boardChoices = new String[App.BOARDS.length];
         for (int i = 0; i < App.BOARDS.length; i++) {
             boardChoices[i] = App.BOARDS[i][0];
-            boardLabels[i] = App.BOARDS[i][1] + " - " + (App.BOARDS[i][2].isEmpty() ? app.autoBoard() : App.BOARDS[i][2]);
+            boardLabels[i] = App.BOARDS[i][1] + (App.BOARDS[i][0].equals(app.detectedChoice()) ? " - this tablet's shape" : "");
         }
         board.setAdapter(new ArrayAdapter<String>(this, android.R.layout.simple_spinner_dropdown_item, boardLabels));
         board.setSelection(Math.max(0, indexOf(boardChoices, app.boardChoice())));

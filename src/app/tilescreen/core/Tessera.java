@@ -308,6 +308,13 @@ public final class Tessera {
         int height();
         int columns();
         int rows();
+        /**
+         * Whether the glass stands (taller than wide) now: the whole display's, not the view's, since bars at a side of a
+         * square glass would make the view stand. A square glass never stands: it has one way, as Tessera's square boards.
+         */
+        boolean upright();
+        /** A square glass (within a tenth): one grid, whichever way it hangs. */
+        boolean square();
         /** The grid kept for one way of the glass: {columns, rows}. */
         int[] kept(boolean upright);
         /** Tessera gave a grid for one way of the glass (and that way to hang): keep it, and turn the screen if need be. */
@@ -612,9 +619,10 @@ public final class Tessera {
         }
         // The way the glass is to hang and the grid the layout is counted on (firmware 0.53.0+, the hello's "grids"): none
         // means the way and the grid it has. A grid that way can't take is refused whole, before anything changes.
-        boolean uprightNow = shape.height() > shape.width();
+        boolean uprightNow = shape.upright();
         Boolean upright = Json.bool(m, "upright");
-        boolean way = upright == null ? uprightNow : upright;
+        // A square glass has one way: Tessera standing it up changes nothing to turn.
+        boolean way = upright == null || shape.square() ? uprightNow : upright;
         int[] target = shape.kept(way);
         if (m.get("grid") != null) {
             List<Object> cells = Json.arr(m.get("grid"));
@@ -873,7 +881,7 @@ public final class Tessera {
         // The grids this screen takes each way its glass hangs, the one it keeps for each, and which way it hangs now
         // (firmware 0.53.0+): the editor's Grid card then chooses this screen's grid, and the begin of a layout brings it.
         Map<String, Object> grids = new LinkedHashMap<String, Object>();
-        grids.put("upright", shape.height() > shape.width());
+        grids.put("upright", shape.upright());
         for (int i = 0; i < 2; i++) {
             int[] kept = shape.kept(i == 1);
             Map<String, Object> way = new LinkedHashMap<String, Object>();

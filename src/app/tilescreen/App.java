@@ -53,12 +53,12 @@ public final class App extends Application {
         super.onCreate();
         self = this;
         prefs = getSharedPreferences("settings", MODE_PRIVATE);
-        // Boards, once (0.12.0): the old list of every board becomes Automatic, the full-feature board of this tablet's
-        // shape. A board picked from the new list after this is kept.
-        if (!prefs.contains("board_scheme")) {
-            String before = prefs.getString("board", "waveshare7b");
-            prefs.edit().putString("board_choice", "auto").putInt("board_scheme", 2).apply();
-            log("board: " + before + " is now Automatic, " + board());
+        // Boards (0.12.0): the old list of every board gave way to one full-feature board per shape. Automatic (0.12.0 to
+        // 0.13.0) is now found once and kept (boardChoice), so a tablet on it keeps the board it had; a shape picked is kept.
+        if (prefs.getInt("board_scheme", 0) < 3) {
+            SharedPreferences.Editor e = prefs.edit();
+            if (!prefs.contains("board_scheme") || "auto".equals(prefs.getString("board_choice", ""))) e.remove("board_choice");
+            e.putInt("board_scheme", 3).commit();
         }
         Thread.setDefaultUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler() {
             final Thread.UncaughtExceptionHandler up = Thread.getDefaultUncaughtExceptionHandler();
@@ -161,36 +161,61 @@ public final class App extends Application {
      * everything (light presets, template tiles, the doorbell, plugins that need a speaker). {choice, label, board id}.
      */
     public static final String[][] BOARDS = {
-            {"auto", "Automatic (recommended)", ""},
-            {"1.71", "1024 x 600 (1.71)", "jc1060p470v2"},
-            {"1.67", "800 x 480 (5:3)", "jc4880p443"},
+            {"1.0", "Square, 720 x 720 (1:1)", "wavesharep4"},
             {"1.6", "1280 x 800 (16:10)", "jc8012p4a1"},
+            {"1.67", "800 x 480 (5:3)", "jc4880p443"},
+            {"1.71", "1024 x 600 (1.71)", "jc1060p470v2"},
             {"1.78", "1280 x 720 (16:9)", "tab5"}};
 
-    public String boardChoice() { return prefs.getString("board_choice", "auto"); }
+    /**
+     * The shape picked (a BOARDS choice): found from the glass once, on the first start, then kept, so the board Tessera
+     * knows never changes under a layout by itself; the settings change it.
+     */
+    public String boardChoice() {
+        String c = prefs.getString("board_choice", "");
+        for (String[] b : BOARDS) if (b[0].equals(c)) return c;
+        c = detectedChoice();
+        SharedPreferences.Editor e = prefs.edit().putString("board_choice", c);
+        // A square glass starts on the grid of Tessera's square boards.
+        if (c.equals("1.0") && !prefs.contains("columns")) e.putInt("columns", 2).putInt("rows", 3);
+        e.commit();
+        log("board: this tablet's shape is " + c + ", " + boardOf(c));
+        return c;
+    }
 
-    /** The board id reported to Tessera: the one picked, or for Automatic the one of this tablet's shape. */
-    public String board() {
-        String choice = boardChoice();
-        for (String[] b : BOARDS) if (b[0].equals(choice) && !b[2].isEmpty()) return b[2];
-        return autoBoard();
+    /** The board id reported to Tessera: the one of the shape picked. */
+    public String board() { return boardOf(boardChoice()); }
+
+    static String boardOf(String choice) {
+        for (String[] b : BOARDS) if (b[0].equals(choice)) return b[2];
+        return "jc1060p470v2";
     }
 
     /**
-     * The full-feature board nearest this tablet's shape (its long side over its short one); a tablet wider than 16:9,
-     * such as the Echo Show 5 (2:1), takes the 1024 x 600 board.
+     * The shape nearest this tablet's glass (its long side over its short one); a tablet wider than 16:9, such as the
+     * Echo Show 5 (2:1), takes the 1024 x 600 board.
      */
-    public String autoBoard() {
+    public String detectedChoice() {
         double r = glassRatio();
-        if (r > 1.8) return "jc1060p470v2";
-        String best = "jc1060p470v2";
+        if (r > 1.8) return "1.71";
+        String best = "1.71";
         double gap = 9;
         for (String[] b : BOARDS) {
-            if (b[2].isEmpty()) continue;
             double d = Math.abs(Double.parseDouble(b[0]) - r);
-            if (d < gap) { gap = d; best = b[2]; }
+            if (d < gap) { gap = d; best = b[0]; }
         }
         return best;
+    }
+
+    /** Whether the whole display stands now (taller than wide by more than a tenth); a square one never does. */
+    public boolean glassUpright() {
+        try {
+            android.util.DisplayMetrics m = new android.util.DisplayMetrics();
+            ((android.view.WindowManager) getSystemService(WINDOW_SERVICE)).getDefaultDisplay().getRealMetrics(m);
+            return m.heightPixels > m.widthPixels * 1.1;
+        } catch (Exception e) {
+            return height > width;
+        }
     }
 
     /** The glass's long side over its short one, the whole display (getRealMetrics). */
@@ -246,16 +271,20 @@ public final class App extends Application {
         return new Tessera.Shape() {
             public int width() { return width; }
             public int height() { return height; }
-            public int columns() { return kept(height > width)[0]; }
-            public int rows() { return kept(height > width)[1]; }
+            public boolean upright() { return glassUpright(); }
+            public boolean square() { return glassRatio() < 1.1; }
+            public int columns() { return kept(upright())[0]; }
+            public int rows() { return kept(upright())[1]; }
             public int[] kept(boolean upright) {
-                return upright ? new int[]{portraitColumns(), portraitRows()} : new int[]{App.this.columns(), App.this.rows()};
+                // A square glass keeps one grid, the lying one, whichever way it hangs.
+                return upright && !square() ? new int[]{portraitColumns(), portraitRows()} : new int[]{App.this.columns(), App.this.rows()};
             }
             public void choose(boolean upright, int columns, int rows) {
+                if (square()) upright = false;
                 SharedPreferences.Editor e = prefs.edit();
                 e.putInt(upright ? "p_columns" : "columns", columns).putInt(upright ? "p_rows" : "rows", rows);
                 // Tessera stood the screen up or laid it down: that way from now on.
-                if (upright != (height > width)) e.putString("orientation", upright ? "portrait" : "landscape");
+                if (upright != glassUpright()) e.putString("orientation", upright ? "portrait" : "landscape");
                 e.commit();
                 new android.os.Handler(android.os.Looper.getMainLooper()).post(new Runnable() {
                     public void run() {
