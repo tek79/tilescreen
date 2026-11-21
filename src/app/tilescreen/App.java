@@ -40,6 +40,7 @@ public final class App extends Application {
     private final Handler main = new Handler(Looper.getMainLooper());
     private SharedPreferences prefs;
     private Screen screen;
+    private Player player;
     private Mdns mdns;
     private WifiManager.MulticastLock multicast;
     private WifiManager.WifiLock wifiLock;
@@ -306,6 +307,12 @@ public final class App extends Application {
 
     public int portraitRows() { return Math.max(1, Math.min(8, prefs.getInt("p_rows", columns()))); }
 
+    /** A call or the doorbell's voice takes the speaker from the music, and gives it back (Player.hold). */
+    public void holdSpeaker(boolean on) {
+        Player p = player;
+        if (p != null) p.hold(on);
+    }
+
     public synchronized Screen screen() {
         if (screen == null) start();
         return screen;
@@ -343,6 +350,16 @@ public final class App extends Application {
         final Screen made = new Screen(s, shape(), store, settingsStore, settingDefaults(), log);
         made.device.setKey(key(), keyStore);
         screen = made;
+        // The tablet's speaker for Home Assistant: plays what it is given (Player).
+        player = new Player(this, made.mediaPlayer, prefs);
+        // Its microphone, for the doorbell's Talk and calls (Mic): only where the tablet has one it may record with.
+        boolean mic = getPackageManager().hasSystemFeature(android.content.pm.PackageManager.FEATURE_MICROPHONE)
+                && checkCallingOrSelfPermission(android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                && Mic.usable();
+        app.tilescreen.core.Tessera.hasMicrophone = mic;
+        app.tilescreen.core.Tessera.echoCancel = mic && Mic.echoCanceller();
+        app.tilescreen.core.Voice.uplink = mic ? new Mic() : null;
+        log("sound: speaker" + (mic ? ", microphone" + (app.tilescreen.core.Tessera.echoCancel ? " with echo cancelling" : "") : ", no microphone"));
         // The battery's sensors before Home Assistant lists the entities.
         battery(registerReceiver(null, new android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED)));
         acquireLocks();

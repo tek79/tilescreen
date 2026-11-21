@@ -31,6 +31,39 @@ final class Chime {
         return out;
     }
 
+    private static short[] ring;
+
+    /** A call's ring (module_call.cpp's): two short bursts of a phone's two tones, 440 and 480 Hz. */
+    private static short[] makeRing() {
+        short[] out = new short[(int) (1.2f * RATE)];
+        for (int i = 0; i < out.length; i++) {
+            float t = (float) i / RATE;
+            boolean on = t < 0.4f || (t >= 0.6f && t < 1.0f);
+            if (!on) continue;
+            float edge = Math.min(1f, Math.min(t % 0.6f, 0.4f - t % 0.6f) / 0.01f);
+            float s = (float) (Math.sin(2 * Math.PI * 440 * t) + Math.sin(2 * Math.PI * 480 * t)) * 0.3f * edge;
+            out[i] = (short) (Math.max(-1f, Math.min(1f, s)) * 32767f);
+        }
+        return out;
+    }
+
+    static synchronized void ringtone() {
+        try {
+            if (ring == null) ring = makeRing();
+            if (playing != null) {
+                try { playing.stop(); } catch (Exception ignored) {}
+                playing.release();
+            }
+            AudioTrack t = new AudioTrack(AudioManager.STREAM_RING, RATE, AudioFormat.CHANNEL_OUT_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT, ring.length * 2, AudioTrack.MODE_STATIC);
+            t.write(ring, 0, ring.length);
+            t.play();
+            playing = t;
+        } catch (Exception e) {
+            App.get().log("call: the ring did not play: " + e);
+        }
+    }
+
     static synchronized void play() {
         try {
             if (samples == null) samples = make();

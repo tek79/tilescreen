@@ -67,7 +67,9 @@ final class Style {
         // unknown and unavailable, so a TV or a receiver that is on shows its colour.
         if (d.equals("media_player")) return !s.isEmpty() && !s.equals("off") && !s.equals("standby")
                 && !s.equals("unknown") && !s.equals("unavailable");
-        if (d.equals("alarm_control_panel")) return s.startsWith("armed") || s.equals("triggered");
+        // Every state but disarmed, as Tessera's Tile::active: armed, and the moments in between.
+        if (d.equals("alarm_control_panel")) return s.startsWith("armed") || s.equals("arming") || s.equals("pending")
+                || s.equals("triggered") || s.equals("disarming");
         if (d.equals("person") || d.equals("device_tracker")) return s.equals("home");
         if (d.equals("timer")) return s.equals("active");
         if (d.equals("vacuum")) return s.equals("cleaning");
@@ -82,7 +84,9 @@ final class Style {
         if ("unavailable".equals(t.state)) return true;
         if (!"unknown".equals(t.state)) return false;
         String d = t.domain();
-        return !(d.equals("sensor") || d.equals("cover") || d.equals("scene") || d.equals("button") || d.equals("input_button"));
+        // A remote is usable when unknown, as in Home Assistant: Android TV's (ADB, a Fire TV) never reports a state.
+        return !(d.equals("sensor") || d.equals("cover") || d.equals("scene") || d.equals("button") || d.equals("input_button")
+                || d.equals("remote"));
     }
 
     static int accent(Tessera.Tile t) {
@@ -104,7 +108,7 @@ final class Style {
         }
         if (d.equals("cover") || d.equals("person") || d.equals("device_tracker")) return GREEN;
         if (d.equals("lock")) return "locked".equals(t.state) ? GREEN : RED;
-        if (d.equals("alarm_control_panel")) return "triggered".equals(t.state) ? RED : GREEN;
+        if (d.equals("alarm_control_panel")) return AlarmPanel.colour(t.state);
         if (d.equals("media_player")) return BLUE;
         if (d.equals("binary_sensor")) return ORANGE;
         if (d.equals("fan") || d.equals("humidifier")) return TEAL;

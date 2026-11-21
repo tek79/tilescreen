@@ -82,6 +82,7 @@ final class Icons {
         if (t.entity.startsWith("screen.page_")) return "arrow-right-circle-outline";
         if (t.entity.equals("screen.clock") || t.entity.equals("screen.nightstand")) return "clock-outline";
         if (t.entity.equals("screen.settings")) return "cog-outline";
+        if (t.entity.equals("screen.call")) return "phone";
         if (t.entity.equals("screen.energy")) return "lightning-bolt";
         if (t.entity.equals("screen.map")) return "map-outline";
         if (d.equals("light")) return on ? "lightbulb" : "lightbulb-outline";
@@ -101,7 +102,8 @@ final class Icons {
         if (d.equals("media_player")) return on ? "speaker-play" : "speaker";
         if (d.equals("scene")) return "palette-outline";
         if (d.equals("script")) return "script-text-outline";
-        if (d.equals("automation")) return "robot-outline";
+        // An automation that is unavailable looks it: Home Assistant's confused robot.
+        if (d.equals("automation")) return "unavailable".equals(s) ? "robot-confused" : "robot-outline";
         if (d.equals("button") || d.equals("input_button")) return "gesture-tap-button";
         if (d.equals("number") || d.equals("input_number")) return "ray-vertex";
         if (d.equals("select") || d.equals("input_select")) return "format-list-bulleted";
@@ -111,7 +113,7 @@ final class Icons {
         if (d.equals("vacuum")) return "robot-vacuum";
         if (d.equals("lawn_mower")) return "robot-mower";
         if (d.equals("camera") || d.equals("image")) return "cctv";
-        if (d.equals("alarm_control_panel")) return s.startsWith("armed") ? "shield-lock" : "shield-off-outline";
+        if (d.equals("alarm_control_panel")) return AlarmPanel.icon(s);
         if (d.equals("timer")) return "timer-outline";
         if (d.equals("remote")) return "remote";
         if (d.equals("update")) return "package-up";

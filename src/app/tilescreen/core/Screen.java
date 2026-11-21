@@ -27,6 +27,9 @@ public final class Screen {
         void ring(Tessera.Ring r);
         void closeRing(String key);
         void ringDoorState(String key, String state);
+        /** Calls between screens (docs/CALLS.md): a call's state, and the list of screens. */
+        void call(Tessera.Call c);
+        void contacts(java.util.List<Tessera.Contact> rows, boolean append, boolean more);
     }
 
     public static final String TILES = "Tiles", WIDGETS = "Widgets", ANDROID = "Android";
@@ -42,6 +45,8 @@ public final class Screen {
     }
 
     public final EspDevice device;
+    /** The tablet's speaker for Home Assistant (a Tessera P4 screen's "Media Player"); the app plays what it is given. */
+    public final EspDevice.MediaPlayer mediaPlayer = new EspDevice.MediaPlayer("media_player", "Media Player");
     public final Tessera tessera;
     private final EspDevice.Text inbox;
     private final EspDevice.TextSensor shape, ip;
@@ -103,6 +108,8 @@ public final class Screen {
         };
         showing.set(TILES);
         device.add(showing);
+        mediaPlayer.icon = "mdi:speaker";
+        device.add(mediaPlayer);
 
         screenSettings = new ScreenSettings(device, settingsStore, log, defaults);
         screenSettings.onSleep = new Runnable() {
@@ -182,6 +189,16 @@ public final class Screen {
             public void doorState(String key, String state) {
                 Ui u = ui;
                 if (u != null) u.ringDoorState(key, state);
+            }
+        });
+        tessera.setCalls(new Tessera.Calls() {
+            public void call(Tessera.Call c) {
+                Ui u = ui;
+                if (u != null) u.call(c);
+            }
+            public void contacts(java.util.List<Tessera.Contact> rows, boolean append, boolean more) {
+                Ui u = ui;
+                if (u != null) u.contacts(rows, append, more);
             }
         });
         tessera.listen(new Tessera.Listener() {
@@ -314,6 +331,24 @@ public final class Screen {
         log.log("doorbell: " + action);
         device.callHomeAssistant("esphome.screen_doorbell", data, null, true);
     }
+
+    /**
+     * What a finger did in a call (esphome.screen_call, docs/CALLS.md "Signalling"): list, dial, cancel, answer, decline,
+     * end, mic, switch or echo; `to` the screen dialled, `video` 1 or 0, `key` the call's.
+     */
+    public void callReport(String action, String to, boolean video, String key) {
+        Map<String, String> data = new LinkedHashMap<String, String>();
+        data.put("action", action);
+        data.put("to", to == null ? "" : to);
+        data.put("video", video ? "1" : "0");
+        data.put("key", key == null ? "" : key);
+        data.put("screen", settings.node);
+        if (!action.equals("list")) log.log("call: " + action + (to == null || to.isEmpty() ? "" : " " + to));
+        device.callHomeAssistant("esphome.screen_call", data, null, true);
+    }
+
+    /** This screen's own name in the list of screens: a call never lists the tablet itself. */
+    public String node() { return settings.node; }
 
     public void setUi(Ui u) { ui = u; }
 

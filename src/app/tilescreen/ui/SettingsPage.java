@@ -136,6 +136,9 @@ final class SettingsPage {
             out.add(row(TOGGLE, "Swipe between pages", "swipe_pages"));
             out.add(row(TOGGLE, "Page buttons", "page_buttons"));
             out.add(row(TOGGLE, "Show home button", "home_button"));
+            out.add(row(TOGGLE, "Loop pages", "loop_pages"));
+            out.add(row(TOGGLE, "Call ringtone", "call_ringtone"));
+            out.add(row(TOGGLE, "Do not disturb", "do_not_disturb"));
             out.add(row(TOGGLE, "Icon toggles, tap opens controls", "icon_toggles"));
             // The settings of the plugins this app draws (tap_sound, waste_collection).
             out.add(row(TOGGLE, "Tap sound", "tap_sound"));

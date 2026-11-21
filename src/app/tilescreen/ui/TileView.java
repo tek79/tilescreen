@@ -30,6 +30,7 @@ import app.tilescreen.App;
 import app.tilescreen.core.Json;
 import app.tilescreen.core.Screen;
 import app.tilescreen.core.Tessera;
+import app.tilescreen.core.Voice;
 
 /** Draws a Tessera layout and turns touches into Home Assistant actions. */
 public final class TileView extends View {
@@ -153,8 +154,60 @@ public final class TileView extends View {
 
     public void changed() {
         ui.post(new Runnable() {
-            public void run() { invalidate(); }
+            public void run() {
+                alarmWatch();
+                invalidate();
+            }
         });
+    }
+
+    // ----- an alarm that goes off (docs/ALARM_PANEL.md, "When the alarm goes off") -----
+
+    /** The alarms that called for attention and were answered by opening their keypad, until they stop calling. */
+    private final java.util.Set<String> alarmsCalling = new java.util.HashSet<String>();
+    private final StringBuilder code = new StringBuilder();
+
+    /**
+     * Someone came in (the entry delay) or the alarm goes off, and disarming asks for a code: the screen wakes with the
+     * keypad, on red, once for each time it starts, unless the alarm's choice keeps this screen quiet. Every screen
+     * follows its alarm's state itself; no automation is needed. An attempt with a code is settled here too.
+     */
+    private void alarmWatch() {
+        if (layout == null) return;
+        for (int i = 0; i < layout.tiles.size(); i++) {
+            Tessera.Tile t = layout.tiles.get(i);
+            String d = t.domain();
+            if (!d.equals("alarm_control_panel") && !d.equals("lock")) continue;
+            AlarmPanel.Keys k = AlarmPanel.keys(t.entity);
+            long now = SystemClock.uptimeMillis();
+            if (k.trying != null) {
+                if (AlarmPanel.reached(t.state, k.trying)) {
+                    k.trying = null;
+                    k.success();
+                    if (cardTile == i && cardView.startsWith("code:")) cardView = "";
+                } else if (now - k.since >= AlarmPanel.ATTEMPT_WAIT_MS) {
+                    k.trying = null;
+                    k.fail(now);
+                }
+            }
+            if (!d.equals("alarm_control_panel")) continue;
+            if (AlarmPanel.keypadFirst(t) && !AlarmPanel.quiet(t)) {
+                if (alarmsCalling.add(t.entity)) {
+                    if (ring != null) finishRing("closed");
+                    if (alert != null) endAlert("replaced");
+                    settingsOpen = false;
+                    calendarOpen = -1;
+                    pluginCard = null;
+                    cardTile = i;
+                    cardView = "";
+                    code.setLength(0);
+                    if (host != null) host.wake();
+                    app.log("alarm: " + t.entity + " is " + t.state + ", the keypad opens");
+                }
+            } else {
+                alarmsCalling.remove(t.entity);
+            }
+        }
     }
 
     public void showAlert(final Screen.Alert a) {
@@ -232,6 +285,14 @@ public final class TileView extends View {
                 lastMinute = minute;
                 invalidate();
             }
+            // An alarm's or a lock's card: its countdown, its keypad's lock and an attempt with a code move by the second.
+            if (layout != null && cardTile >= 0 && cardTile < layout.tiles.size()) {
+                String cd = layout.tiles.get(cardTile).domain();
+                if (cd.equals("alarm_control_panel") || cd.equals("lock")) {
+                    alarmWatch();
+                    invalidate();
+                }
+            }
             ui.postDelayed(this, 1000);
         }
     };
@@ -304,6 +365,7 @@ public final class TileView extends View {
         if (calendarOpen >= 0) drawCalendarFull(c, w, h);
         if (settingsOpen) drawSettings(c, w, h);
         if (ring != null) drawRing(c, w, h);
+        else if (callStage != CALL_NONE) drawCall(c, w, h);
         if (alert != null) drawAlert(c, w, h);
         if (banner != null && SystemClock.uptimeMillis() < bannerUntil) drawBanner(c, w, h);
     }
@@ -767,9 +829,14 @@ public final class TileView extends View {
         }
         // Previous and Next at the ends of the bar, the page dots between.
         int at = included.indexOf(page);
+        // Loop pages: the arrows go round, past the last page to the first and before the first to the last.
+        boolean loop = app.screen().screenSettings.loopPages() && included.size() > 1;
+        int n = included.size();
         String[] keys = {"chevron-left", "chevron-right"};
         for (int k = 0; k < 2; k++) {
-            final int target = at < 0 ? -1 : k == 0 ? (at > 0 ? included.get(at - 1) : -1) : (at < included.size() - 1 ? included.get(at + 1) : -1);
+            int to = at < 0 ? -1 : at + (k == 0 ? -1 : 1);
+            if (loop && at >= 0) to = (to + n) % n;
+            final int target = to < 0 || to >= n ? -1 : included.get(to);
             float kx = k == 0 ? 6 * u : w - 6 * u;
             glyphs.setColor(target < 0 ? Style.LINE : Style.DIM);
             glyphs.setTextSize(height * 0.85f);
@@ -1863,10 +1930,218 @@ public final class TileView extends View {
         }
     }
 
+    // ----- an alarm panel's card and keypad, and a lock's keypad (AlarmPanel, alarm_panel.h) -----
+
+
+    private void drawAlarm(Canvas c, final Tessera.Tile t, RectF body, float fs) {
+        String view = cardView;
+        if (view.isEmpty() && AlarmPanel.keypadFirst(t)) view = "code:" + AlarmPanel.DISARM.service;
+        if (view.startsWith("code:")) {
+            AlarmPanel.Mode m = AlarmPanel.mode(view.substring(5));
+            if (m != null) {
+                drawKeypad(c, t, m, body, fs);
+                return;
+            }
+        }
+        boolean lock = AlarmPanel.lock(t);
+        String state = t.state;
+        boolean urgent = !lock && AlarmPanel.urgent(state);
+        List<AlarmPanel.Mode> modes = urgent ? java.util.Collections.singletonList(AlarmPanel.DISARM) : AlarmPanel.modes(t);
+        int colour = lock ? Style.accent(t) : AlarmPanel.colour(state);
+        boolean lit = lock ? "locked".equals(state) : !"disarmed".equals(state);
+        float gap = 3 * u, keyH = Math.max(fs * 2.6f, Math.min(13 * u, 18 * mm()));
+        int rowsOfKeys = urgent ? 1 : (modes.size() + 1) / 2;
+        float keysH = rowsOfKeys * keyH + (rowsOfKeys - 1) * gap;
+        // The card's head already shows the shield and the state; an exit or entry delay says its time left above the keys.
+        float y = body.top + Math.max(0, (body.height() - keysH) / 2);
+        long left = AlarmPanel.secondsLeft(t);
+        if (urgent) {
+            String line = Style.stateLine(t) + (left > 0 ? " \u00b7 " + AlarmPanel.clock(left) : "");
+            text.setTypeface(medium);
+            text.setTextSize(fs * 1.3f);
+            text.setColor(colour);
+            text.setTextAlign(Paint.Align.CENTER);
+            c.drawText(fit(line, body.width()), body.centerX(), y - fs * 1.2f, text);
+            text.setTextAlign(Paint.Align.LEFT);
+        }
+        float colW = urgent || modes.size() == 1 ? body.width() : (body.width() - gap) / 2;
+        for (int i = 0; i < modes.size(); i++) {
+            final AlarmPanel.Mode m = modes.get(i);
+            boolean lastOdd = !urgent && modes.size() % 2 == 1 && i == modes.size() - 1;
+            float x = body.left + (urgent || lastOdd ? 0 : (i % 2) * (colW + gap));
+            float kw = urgent || lastOdd ? body.width() : colW;
+            float ky = y + (urgent ? 0 : (i / 2) * (keyH + gap));
+            RectF k = new RectF(x, ky, x + kw, ky + keyH);
+            boolean current = m.state.equals(state);
+            int bg = urgent ? Style.RED : current ? withAlpha(colour, 70) : Style.RAISED;
+            int fg = urgent ? 0xFFFFFFFF : Style.TEXT;
+            fill.setColor(bg);
+            c.drawRoundRect(k, keyH / 2, keyH / 2, fill);
+            glyphs.setColor(urgent ? 0xFFFFFFFF : current ? colour : Style.DIM);
+            glyphs.setTextSize(keyH * 0.42f);
+            text.setTypeface(medium);
+            text.setTextSize(keyH * 0.34f);
+            float tw = text.measureText(m.label), iw = keyH * 0.5f, total = iw + u * 1.5f + tw;
+            float sx = k.centerX() - total / 2;
+            c.drawText(Icons.sure(getContext(), m.icon), sx + iw / 2, k.centerY() + keyH * 0.15f, glyphs);
+            text.setColor(fg);
+            c.drawText(m.label, sx + iw + u * 1.5f, k.centerY() + keyH * 0.12f, text);
+            Hit hit = new Hit(k);
+            hit.tap = new Runnable() {
+                public void run() { choose(t, m); }
+            };
+            hits.add(hit);
+        }
+    }
+
+    /** A mode chosen on the card: straight to Home Assistant, or to the keypad when it asks a code. */
+    private void choose(Tessera.Tile t, AlarmPanel.Mode m) {
+        if (AlarmPanel.needsCode(t, m)) {
+            if (!AlarmPanel.typable(t)) {
+                say("This code has letters: use Home Assistant");
+                return;
+            }
+            cardView = "code:" + m.service;
+            code.setLength(0);
+            invalidate();
+            return;
+        }
+        call(m.service, t);
+    }
+
+    /** The code goes to Home Assistant as the action's `code` and is wiped at once; it is never logged or kept. */
+    private void sendCode(Tessera.Tile t, AlarmPanel.Mode m) {
+        if (code.length() == 0) return;
+        AlarmPanel.Keys k = AlarmPanel.keys(t.entity);
+        String typed = code.toString();
+        code.setLength(0);
+        if (call(m.service, t, "code", typed)) {
+            k.trying = m;
+            k.since = SystemClock.uptimeMillis();
+            k.wrong = false;
+        }
+        invalidate();
+    }
+
+    /**
+     * The keypad (alarm_panel.h keypad_layout): the dots and one line above twelve keys, or beside them on glass at
+     * least 1.3 times as wide as tall; the keys as large as the room allows, up to a large phone keypad's (24 x 18 mm).
+     * Delete left of 0 and OK right of it, or, when the code sends itself after its digits, Delete on the right.
+     */
+    private void drawKeypad(Canvas c, final Tessera.Tile t, final AlarmPanel.Mode m, RectF body, float fs) {
+        final AlarmPanel.Keys keys = AlarmPanel.keys(t.entity);
+        long now = SystemClock.uptimeMillis();
+        long locked = keys.lockedFor(now);
+        final int sendAfter = AlarmPanel.sendAfter(t);
+        float g = 2.5f * u, w = body.width(), h = body.height();
+        boolean beside = w * 10 >= h * 13;
+        float dot = Math.max(2.5f * u, fs * 0.9f);
+        int lines = beside ? 3 : 1;
+        float lineH = fs * 1.3f, infoH = dot + g + lines * lineH;
+        float infoW = beside ? w * 0.36f : w;
+        float roomW = beside ? w - infoW - 2 * g : w, roomH = beside ? h : h - infoH - 2 * g;
+        float least = Math.max(9 * mm(), fs * 2.2f);
+        float kw = (roomW - 2 * g) / 3, kh = (roomH - 3 * g) / 4;
+        kw = Math.min(kw, kh * 2.1f);
+        kh = Math.min(kh, kw * 1.4f);
+        kw = Math.max(least, Math.min(kw, 24 * mm()));
+        kh = Math.max(least * 0.75f, Math.min(kh, 18 * mm()));
+        float padW = 3 * kw + 2 * g, padH = 4 * kh + 3 * g;
+        RectF info;
+        float px, py;
+        if (beside) {
+            float pair = infoW + 2 * g + padW, x0 = body.left + Math.max(0, (w - pair) / 2);
+            info = new RectF(x0, body.top, x0 + infoW, body.bottom);
+            px = x0 + infoW + 2 * g;
+            py = body.top + (h - padH) / 2;
+        } else {
+            float block = infoH + 2 * g + padH, y0 = body.top + Math.max(0, (h - block) / 2);
+            info = new RectF(body.left, y0, body.right, y0 + infoH + g);
+            px = body.left + (w - padW) / 2;
+            py = y0 + infoH + 2 * g;
+        }
+        // The dots: one per digit typed, at least four, or exactly the digits that send the code.
+        int shown = Math.min(AlarmPanel.CODE_MAX, AlarmPanel.dotsShown(sendAfter, code.length()));
+        while (dot > 4 && shown * dot + (shown - 1) * dot * 0.6f > info.width()) dot -= 1;
+        float rowW = shown * dot + (shown - 1) * dot * 0.6f;
+        float by = info.top + (info.height() - (dot + g + lines * lineH)) / 2;
+        float dx = info.centerX() - rowW / 2;
+        for (int i = 0; i < shown; i++) {
+            float cx = dx + i * dot * 1.6f + dot / 2;
+            fill.setColor(i < code.length() ? Style.TEXT : Style.LINE);
+            c.drawCircle(cx, by + dot / 2, dot / 2, fill);
+        }
+        // The line under them: what goes on, a refused code, the keypad's lock, the alarm's time left.
+        String line;
+        boolean bad = false;
+        if (locked > 0) { line = "Try again in " + AlarmPanel.clock(locked); bad = true; }
+        else if (keys.trying != null) line = "Checking…";
+        else if (keys.wrong) { line = "Nothing changed. Check the code."; bad = true; }
+        else if (AlarmPanel.callsForAttention(t.state)) {
+            long left = AlarmPanel.secondsLeft(t);
+            line = ("triggered".equals(t.state) ? "The alarm goes off" : "Pending") + (left > 0 ? " · " + AlarmPanel.clock(left) : "");
+            bad = "triggered".equals(t.state);
+        } else line = "Code to " + m.label.toLowerCase(Locale.getDefault());
+        text.setTypeface(regular);
+        text.setTextSize(fs * 0.95f);
+        text.setColor(bad ? Style.RED : Style.DIM);
+        text.setTextAlign(Paint.Align.CENTER);
+        c.drawText(fit(line, info.width()), info.centerX(), by + dot + g + lineH * 0.8f, text);
+        text.setTextAlign(Paint.Align.LEFT);
+        // The keys: 1-9, then the key left of 0, 0, and the key right of it.
+        final boolean open = locked == 0 && keys.trying == null;
+        String backspace = Icons.sure(getContext(), "backspace-outline");
+        for (int i = 0; i < 12; i++) {
+            RectF k = new RectF(px + (i % 3) * (kw + g), py + (i / 3) * (kh + g), px + (i % 3) * (kw + g) + kw, py + (i / 3) * (kh + g) + kh);
+            final String label;
+            final int kind; // 0 digit, 1 delete, 2 OK, -1 none
+            if (i < 9) { label = String.valueOf(i + 1); kind = 0; }
+            else if (i == 10) { label = "0"; kind = 0; }
+            else if (i == 9) { label = sendAfter > 0 ? null : backspace; kind = sendAfter > 0 ? -1 : 1; }
+            else { label = sendAfter > 0 ? backspace : "OK"; kind = sendAfter > 0 ? 1 : 2; }
+            if (kind < 0) continue;
+            boolean ok = kind == 2;
+            fill.setColor(ok ? (open && code.length() > 0 ? Style.BLUE : Style.RAISED) : Style.RAISED);
+            c.drawRoundRect(k, Math.min(kh, kw) / 2.2f, Math.min(kh, kw) / 2.2f, fill);
+            if (kind == 1) {
+                glyphs.setColor(open ? Style.TEXT : Style.FAINT);
+                glyphs.setTextSize(kh * 0.45f);
+                c.drawText(label, k.centerX(), k.centerY() + kh * 0.16f, glyphs);
+            } else {
+                text.setTypeface(medium);
+                text.setTextSize(Math.min(kh * 0.42f, kw * 0.42f));
+                text.setColor(!open ? Style.FAINT : ok && code.length() > 0 ? 0xFFFFFFFF : Style.TEXT);
+                text.setTextAlign(Paint.Align.CENTER);
+                c.drawText(label, k.centerX(), k.centerY() + text.getTextSize() * 0.36f, text);
+                text.setTextAlign(Paint.Align.LEFT);
+            }
+            Hit hit = new Hit(k);
+            hit.tap = new Runnable() {
+                public void run() {
+                    if (!open) return;
+                    AlarmPanel.Keys kk = AlarmPanel.keys(t.entity);
+                    if (kind == 0) {
+                        if (code.length() >= AlarmPanel.CODE_MAX) return;
+                        kk.wrong = false;
+                        code.append(label);
+                        if (sendAfter > 0 && code.length() == sendAfter) sendCode(t, m);
+                    } else if (kind == 1) {
+                        if (code.length() > 0) code.setLength(code.length() - 1);
+                    } else {
+                        sendCode(t, m);
+                    }
+                    invalidate();
+                }
+            };
+            hits.add(hit);
+        }
+    }
+
     // ----- the detail card -----
 
     private void drawCard(Canvas c, final Tessera.Tile t, int w, int h) {
-        fill.setColor(0xB0000000);
+        // An alarm that goes off or counts someone in: its keypad on red over the whole glass.
+        fill.setColor(AlarmPanel.keypadFirst(t) ? 0xE0B3261E : 0xB0000000);
         c.drawRect(0, 0, w, h, fill);
         Hit outside = new Hit(new RectF(0, 0, w, h));
         outside.tap = new Runnable() {
@@ -1916,12 +2191,21 @@ public final class TileView extends View {
         c.drawText(Icons.sure(getContext(), "close"), r.right - pad - 3 * u, r.top + pad + 5 * u, glyphs);
         Hit close = new Hit(new RectF(r.right - pad - 9 * u, r.top, r.right, r.top + pad + 10 * u));
         close.tap = new Runnable() {
-            public void run() { cardTile = -1; }
+            public void run() {
+                // Back from a keypad goes to its card, unless the keypad is the card (the alarm goes off).
+                if (cardView.startsWith("code:") && !AlarmPanel.keypadFirst(t)) {
+                    cardView = "";
+                    code.setLength(0);
+                } else {
+                    cardTile = -1;
+                }
+            }
         };
         hits.add(close);
 
         if (cardTile != cardViewTile) {
             cardViewTile = cardTile;
+            code.setLength(0);
             if (vacuumCard != null) vacuumCard.reset();
             cardView = "";
             pickPage = 0;
@@ -1959,6 +2243,11 @@ public final class TileView extends View {
             hits.add(lib);
         }
         RectF body = new RectF(r.left + pad, r.top + pad * 2 + ic, r.right - pad, r.bottom - pad);
+        if (t.domain().equals("alarm_control_panel")
+                || t.domain().equals("lock") && AlarmPanel.needsCode(t, AlarmPanel.UNLOCK) && AlarmPanel.typable(t)) {
+            drawAlarm(c, t, body, fs);
+            return;
+        }
         if (t.domain().equals("remote") && Json.arr(t.extra.get("keys")) != null) {
             // A remote whose integration names its keys: the keypad, the power key in the top bar (render_remote_detail).
             final boolean powered = "on".equals(t.state);
@@ -3729,6 +4018,8 @@ public final class TileView extends View {
     /** The view closes: `how` is said when nothing said how it ended yet (its close key, a new alert). */
     private void finishRing(String how) {
         if (ring == null) return;
+        // Talk goes off with the view.
+        if (talking) stopTalk();
         if (!ringEnded && how != null) report(how);
         ringEnded = true;
         ring = null;
@@ -3816,7 +4107,8 @@ public final class TileView extends View {
         // The picture beside the keys on glass lying down, above them on square or standing glass; never under them.
         RectF room = new RectF(pad, bar, w - pad, h - pad);
         RectF keys = null;
-        if (r.door != 0) {
+        boolean talk = !r.talk.isEmpty() && Voice.uplink != null;
+        if (r.door != 0 || talk) {
             if (w > h * 1.15f) {
                 keys = new RectF(w - pad - 34 * u, bar, w - pad, h - pad);
                 room.right = keys.left - pad;
@@ -3826,7 +4118,523 @@ public final class TileView extends View {
             }
         }
         drawRingPicture(c, r, room);
-        if (keys != null) drawDoorKey(c, keys, now);
+        if (keys != null) {
+            RectF door = keys, talkKey = null;
+            if (talk && r.door != 0) {
+                // Both: the door's key and Talk share the column, or the row under a standing picture.
+                boolean column = keys.height() > keys.width();
+                door = column ? new RectF(keys.left, keys.top, keys.right, keys.centerY() - pad / 2)
+                        : new RectF(keys.left, keys.top, keys.centerX() - pad / 2, keys.bottom);
+                talkKey = column ? new RectF(keys.left, keys.centerY() + pad / 2, keys.right, keys.bottom)
+                        : new RectF(keys.centerX() + pad / 2, keys.top, keys.right, keys.bottom);
+            } else if (talk) {
+                talkKey = keys;
+                door = null;
+            }
+            if (door != null) drawDoorKey(c, door, now);
+            if (talkKey != null) drawTalkKey(c, talkKey, r);
+        }
+    }
+
+    // ----- calls between screens (docs/CALLS.md, module_call.cpp) -----
+
+    /** A live call's media from the add-on; set by the app (CallStream), null where there is none (the harness). */
+    public static volatile CallMedia callMedia;
+
+    static final int CALL_NONE = 0, CALL_LIST = 1, CALL_OUT = 2, CALL_RING = 3, CALL_LIVE = 4, CALL_ENDED = 5;
+    private static final long CALL_END_SHOWN_MS = 2500, HUNG_UP_WAIT_MS = 2500;
+    private int callStage = CALL_NONE;
+    private String callKey = "", callPeer = "", callWhy = "", callLink = "", callTalk = "";
+    private boolean callVideo, callHeld, micOff, canSwitch, switching, canCancel, cancelling, listWaiting;
+    private long callSince, callEndedAt, hungUpAt;
+    private List<Tessera.Contact> contactRows = new ArrayList<Tessera.Contact>(), contactsComing = new ArrayList<Tessera.Contact>();
+
+    public int callStage() { return callStage; }
+
+    /** The op `call`. */
+    public void call(final Tessera.Call c) {
+        ui.post(new Runnable() {
+            public void run() { onCall(c); }
+        });
+    }
+
+    /** The op `contacts`: the list, in parts. */
+    public void contacts(final List<Tessera.Contact> rows, final boolean append, final boolean more) {
+        ui.post(new Runnable() {
+            public void run() {
+                if (!append) contactsComing = new ArrayList<Tessera.Contact>();
+                contactsComing.addAll(rows);
+                if (!more) {
+                    contactRows = contactsComing;
+                    listWaiting = false;
+                }
+                invalidate();
+            }
+        });
+    }
+
+    private void openCallList() {
+        if (callStage != CALL_NONE && callStage != CALL_ENDED) return;
+        closeOverlays();
+        callStage = CALL_LIST;
+        listWaiting = true;
+        app.screen().callReport("list", "", false, "");
+        invalidate();
+    }
+
+    private void dial(String to, boolean video) {
+        if (callStage != CALL_NONE && callStage != CALL_LIST && callStage != CALL_ENDED) return;
+        app.screen().callReport("dial", to, video, "");
+    }
+
+    private void closeOverlays() {
+        cardTile = -1;
+        pluginCard = null;
+        settingsOpen = false;
+        calendarOpen = -1;
+    }
+
+    private void onCall(Tessera.Call c) {
+        if (c.state.equals("set")) {
+            if (!c.key.equals(callKey) || callStage != CALL_LIVE) return;
+            if (c.voiceSwitch >= 0) switching = c.voiceSwitch == 1;
+            if (c.echo >= 0) cancelling = c.echo == 1;
+            invalidate();
+            return;
+        }
+        if (c.state.equals("end")) {
+            if (!c.key.equals(callKey) && callStage == CALL_NONE && c.why.isEmpty()) return;
+            leaveCall();
+            callKey = c.key;
+            if (!c.name.isEmpty()) callPeer = c.name;
+            callWhy = c.why;
+            callStage = CALL_ENDED;
+            callEndedAt = SystemClock.uptimeMillis();
+            ui.postDelayed(new Runnable() {
+                public void run() {
+                    if (callStage == CALL_ENDED && SystemClock.uptimeMillis() - callEndedAt >= CALL_END_SHOWN_MS - 50) {
+                        callStage = CALL_NONE;
+                        invalidate();
+                    }
+                }
+            }, CALL_END_SHOWN_MS);
+            invalidate();
+            return;
+        }
+        callKey = c.key;
+        callPeer = c.name;
+        callVideo = c.video;
+        hungUpAt = 0;
+        app.screen().screenSettings.calling(true);
+        if (c.state.equals("out")) {
+            callStage = CALL_OUT;
+            closeOverlays();
+        } else if (c.state.equals("ring")) {
+            if (ring != null) finishRing("closed");
+            closeOverlays();
+            callStage = CALL_RING;
+            callSince = SystemClock.uptimeMillis();
+            if (host != null) host.wake();
+        } else if (c.state.equals("live")) {
+            boolean again = callStage == CALL_LIVE;
+            boolean changed = !c.link.equals(callLink);
+            callHeld = false;
+            if (!again) {
+                callSince = SystemClock.uptimeMillis();
+                micOff = false;
+                canSwitch = c.voiceSwitch >= 0;
+                switching = c.voiceSwitch == 1;
+                canCancel = c.echo >= 0;
+                cancelling = c.echo == 1;
+                // A screen whose own switch says its calls start without voice switching turns it off for the call.
+                if (canSwitch && switching && !app.screen().screenSettings.callSwitching()) {
+                    switching = false;
+                    app.screen().callReport("switch", "", false, callKey);
+                }
+            }
+            callStage = CALL_LIVE;
+            callTalk = c.talk;
+            // The stream first: it puts Android on its voice path, which a recording that already runs may not survive.
+            if (changed || !again) {
+                callLink = c.link;
+                CallMedia m = callMedia;
+                if (m != null && !callLink.isEmpty()) {
+                    m.start(withRoom(callLink), new Runnable() {
+                        public void run() { postInvalidate(); }
+                    });
+                }
+            }
+            Voice.Uplink v = Voice.uplink;
+            if (v != null && !callTalk.isEmpty() && (!again || v.state() == Voice.OFF || v.state() == Voice.FAILED)) {
+                v.stop();
+                v.start(callTalk);
+            }
+            if (v != null) v.mute(micOff);
+        } else if (c.state.equals("held")) {
+            callHeld = true;
+            Voice.Uplink v = Voice.uplink;
+            if (v != null) v.mute(true);
+        }
+        invalidate();
+    }
+
+    /**
+     * The stream's link with the room its pictures go in (`?room=WxH`, live_stream.serve): the other's picture beside the
+     * keys on glass lying down, above them standing, as drawCall places it. The add-on scales its pictures to it.
+     */
+    private String withRoom(String link) {
+        int w = Math.max(64, getWidth()), h = Math.max(64, getHeight());
+        float pad = 3 * u, key = Math.min(18 * u, Math.min(w, h) * 0.2f);
+        boolean lying = w > h * 1.15f;
+        int rw = Math.max(64, Math.round(lying ? w - key - 9 * pad : w - 2 * pad));
+        int rh = Math.max(64, Math.round(lying ? h - 2 * pad : h - key - 13 * pad));
+        return link + (link.indexOf('?') < 0 ? "?" : "&") + "room=" + rw + "x" + rh;
+    }
+
+    /** The call's media stop: the voice up, the stream down. */
+    private void leaveCall() {
+        Voice.Uplink v = Voice.uplink;
+        if (v != null && callStage == CALL_LIVE) v.stop();
+        CallMedia m = callMedia;
+        if (m != null) m.stop();
+        callLink = callTalk = "";
+        app.screen().screenSettings.calling(false);
+    }
+
+    /** A hang-up, a cancel or a decline: said to the add-on; without its answer the call ends here anyway. */
+    private void hangUp(final String action) {
+        app.screen().callReport(action, "", false, callKey);
+        hungUpAt = SystemClock.uptimeMillis();
+        final String key = callKey;
+        ui.postDelayed(new Runnable() {
+            public void run() {
+                if (key.equals(callKey) && callStage != CALL_NONE && callStage != CALL_ENDED && hungUpAt != 0) {
+                    Tessera.Call c = new Tessera.Call();
+                    c.state = "end";
+                    c.key = key;
+                    c.why = "hung_up";
+                    onCall(c);
+                }
+            }
+        }, HUNG_UP_WAIT_MS);
+    }
+
+    private static String endWords(String why) {
+        if (why.equals("declined")) return "Declined";
+        if (why.equals("busy")) return "Busy";
+        if (why.equals("missed") || why.equals("no_answer")) return "No answer";
+        if (why.equals("quiet")) return "Doesn't want to be disturbed";
+        if (why.equals("gone")) return "Not reachable";
+        return "Call ended";
+    }
+
+    private static String contactWords(Tessera.Contact r) {
+        if (r.state.equals("busy")) return "In a call";
+        if (r.state.equals("quiet")) return "Do not disturb";
+        if (r.state.equals("offline")) return "Offline";
+        if (!r.sound) return "No sound";
+        return r.missed > 0 ? "Missed call" : "";
+    }
+
+    /** A round key with an icon and, under it, words. */
+    private void callKey(Canvas c, float cx, float cy, float d, int color, String icon, String words, Runnable run) {
+        fill.setColor(color);
+        c.drawCircle(cx, cy, d / 2, fill);
+        glyphs.setColor(0xFFFFFFFF);
+        glyphs.setTextSize(d * 0.46f);
+        c.drawText(Icons.sure(getContext(), icon), cx, cy + d * 0.16f, glyphs);
+        if (words != null) {
+            text.setTypeface(regular);
+            text.setTextSize(3.4f * u);
+            text.setColor(0xFFB0B6C0);
+            text.setTextAlign(Paint.Align.CENTER);
+            c.drawText(words, cx, cy + d / 2 + 4.6f * u, text);
+            text.setTextAlign(Paint.Align.LEFT);
+        }
+        Hit hit = new Hit(new RectF(cx - d / 2, cy - d / 2, cx + d / 2, cy + d / 2));
+        hit.tap = run;
+        hits.add(hit);
+    }
+
+    private void drawCall(Canvas c, int w, int h) {
+        long now = SystemClock.uptimeMillis();
+        fill.setColor(0xFF000000);
+        c.drawRect(0, 0, w, h, fill);
+        hits.add(new Hit(new RectF(0, 0, w, h)));
+        float pad = 3 * u, key = Math.min(18 * u, Math.min(w, h) * 0.2f);
+        text.setTextAlign(Paint.Align.CENTER);
+        if (callStage == CALL_LIST) {
+            drawCallList(c, w, h);
+            return;
+        }
+        boolean live = callStage == CALL_LIVE;
+        android.graphics.Bitmap pic = live && callMedia != null ? callMedia.picture() : null;
+        // The other's picture beside the keys on glass lying down, above them standing; else the name in large.
+        boolean lying = w > h * 1.15f;
+        RectF room = lying ? new RectF(pad, pad, w - key - 8 * pad, h - pad) : new RectF(pad, pad, w - pad, h - key - 12 * pad);
+        float cx = lying ? w - key / 2 - 3 * pad : w / 2f;
+        if (pic != null) {
+            float s = Math.min(room.width() / pic.getWidth(), room.height() / pic.getHeight());
+            float pw = pic.getWidth() * s, ph = pic.getHeight() * s;
+            RectF dst = new RectF(room.centerX() - pw / 2, room.centerY() - ph / 2, room.centerX() + pw / 2, room.centerY() + ph / 2);
+            Paint smooth = new Paint(Paint.FILTER_BITMAP_FLAG);
+            c.drawBitmap(pic, new Rect(0, 0, pic.getWidth(), pic.getHeight()), dst, smooth);
+        } else {
+            float ac = Math.min(room.width(), room.height()) * 0.32f;
+            fill.setColor(0xFF2C313B);
+            c.drawCircle(room.centerX(), room.centerY() - ac * 0.3f, ac / 2, fill);
+            glyphs.setColor(0xFFFFFFFF);
+            glyphs.setTextSize(ac * 0.5f);
+            c.drawText(Icons.sure(getContext(), live ? "phone-in-talk" : callStage == CALL_RING ? "phone-ring" : "phone"),
+                    room.centerX(), room.centerY() - ac * 0.3f + ac * 0.18f, glyphs);
+            text.setTypeface(medium);
+            text.setTextSize(6 * u);
+            text.setColor(0xFFFFFFFF);
+            c.drawText(fit(callPeer, room.width()), room.centerX(), room.centerY() + ac * 0.45f, text);
+            String line;
+            if (callStage == CALL_OUT) line = "Calling…";
+            else if (callStage == CALL_RING) line = "is calling";
+            else if (callStage == CALL_ENDED) line = endWords(callWhy);
+            else if (callHeld) line = "On hold";
+            else {
+                long s = (now - callSince) / 1000;
+                line = AlarmPanel.clock(s) + (callMedia != null && callMedia.hearing() ? " · speaking" : "");
+            }
+            text.setTypeface(regular);
+            text.setTextSize(4.2f * u);
+            text.setColor(0xFFB0B6C0);
+            c.drawText(fit(line, room.width()), room.centerX(), room.centerY() + ac * 0.45f + 7 * u, text);
+        }
+        text.setTextAlign(Paint.Align.LEFT);
+        if (callStage == CALL_ENDED) return;
+        // The keys: under the picture standing, in a column beside it lying.
+        int red = 0xFFE5484D, green = 0xFF30A46C;
+        if (callStage == CALL_OUT) {
+            callKey(c, cx, lying ? h / 2f : h - key / 2 - 8 * pad, key, red, "phone-hangup", "Cancel", new Runnable() {
+                public void run() { hangUp("cancel"); }
+            });
+        } else if (callStage == CALL_RING) {
+            float a = lying ? h * 0.33f : w * 0.33f, b = lying ? h * 0.67f : w * 0.67f, fixed = lying ? cx : h - key / 2 - 8 * pad;
+            callKey(c, lying ? fixed : a, lying ? a : fixed, key, green, "phone", "Answer", new Runnable() {
+                public void run() { app.screen().callReport("answer", "", false, callKey); }
+            });
+            callKey(c, lying ? fixed : b, lying ? b : fixed, key, red, "phone-hangup", "Decline", new Runnable() {
+                public void run() { hangUp("decline"); }
+            });
+            ui.postDelayed(new Runnable() {
+                public void run() { invalidate(); }
+            }, 500);
+        } else if (live) {
+            boolean hasMic = Voice.uplink != null && !callTalk.isEmpty();
+            float a = lying ? h * 0.33f : w * 0.33f, b = lying ? h * 0.67f : w * 0.67f, fixed = lying ? cx : h - key / 2 - 8 * pad;
+            if (hasMic) {
+                callKey(c, lying ? fixed : a, lying ? a : fixed, key, micOff ? 0xFFFFFFFF : 0xFF2C313B,
+                        micOff ? "microphone-off" : "microphone", micOff ? "Muted" : "Mute", new Runnable() {
+                            public void run() {
+                                micOff = !micOff;
+                                Voice.Uplink v = Voice.uplink;
+                                if (v != null) v.mute(micOff || callHeld);
+                                app.screen().callReport("mic", "", !micOff, callKey);
+                                invalidate();
+                            }
+                        });
+                if (micOff) {
+                    // A white key: its icon in black.
+                    glyphs.setColor(0xFF000000);
+                    glyphs.setTextSize(key * 0.46f);
+                    c.drawText(Icons.sure(getContext(), "microphone-off"), lying ? fixed : a, (lying ? a : fixed) + key * 0.16f, glyphs);
+                }
+            }
+            callKey(c, hasMic ? (lying ? fixed : b) : cx, hasMic ? (lying ? b : fixed) : (lying ? h / 2f : fixed), key, red, "phone-hangup", "Hang up",
+                    new Runnable() {
+                        public void run() { hangUp("end"); }
+                    });
+            // The call's small keys in the top corner on the keys' side: voice switching, and echo cancelling where a side has it.
+            float sk = 9 * u, sx = w - pad - sk / 2, sy = pad + sk / 2;
+            if (canSwitch) {
+                smallKey(c, sx, sy, sk, "account-voice", switching, new Runnable() {
+                    public void run() {
+                        switching = !switching;
+                        app.screen().callReport("switch", "", switching, callKey);
+                        invalidate();
+                    }
+                });
+                sx -= sk + pad;
+            }
+            if (canCancel) {
+                smallKey(c, sx, sy, sk, "ear-hearing", cancelling, new Runnable() {
+                    public void run() {
+                        cancelling = !cancelling;
+                        app.screen().callReport("echo", "", cancelling, callKey);
+                        invalidate();
+                    }
+                });
+            }
+            ui.postDelayed(new Runnable() {
+                public void run() { invalidate(); }
+            }, 1000);
+        }
+    }
+
+    private void smallKey(Canvas c, float cx, float cy, float d, String icon, boolean on, Runnable run) {
+        fill.setColor(on ? 0xFF3A4150 : 0xFF1C1F26);
+        c.drawCircle(cx, cy, d / 2, fill);
+        glyphs.setColor(on ? 0xFFFFFFFF : 0xFF6B7380);
+        glyphs.setTextSize(d * 0.5f);
+        c.drawText(Icons.sure(getContext(), icon), cx, cy + d * 0.17f, glyphs);
+        Hit hit = new Hit(new RectF(cx - d / 2, cy - d / 2, cx + d / 2, cy + d / 2));
+        hit.tap = run;
+        hits.add(hit);
+    }
+
+    /** The list of screens (calls.contacts): the ones that can be called first, a key for sound and one for video. */
+    private void drawCallList(Canvas c, int w, int h) {
+        float pad = 3 * u, bar = 12 * u;
+        text.setTextAlign(Paint.Align.LEFT);
+        text.setTypeface(medium);
+        text.setTextSize(5 * u);
+        text.setColor(0xFFFFFFFF);
+        c.drawText("Call", pad * 2, bar / 2 + 1.8f * u, text);
+        glyphs.setColor(0xFFFFFFFF);
+        glyphs.setTextSize(5.6f * u);
+        c.drawText(Icons.sure(getContext(), "close"), w - pad - 6 * u, bar / 2 + 2 * u, glyphs);
+        Hit close = new Hit(new RectF(w - 14 * u, 0, w, bar));
+        close.tap = new Runnable() {
+            public void run() {
+                callStage = CALL_NONE;
+                invalidate();
+            }
+        };
+        hits.add(close);
+        float rowH = Math.max(15 * u, 12 * mm()), y = bar + pad;
+        if (contactRows.isEmpty()) {
+            text.setTypeface(regular);
+            text.setTextSize(4.2f * u);
+            text.setColor(0xFFB0B6C0);
+            text.setTextAlign(Paint.Align.CENTER);
+            c.drawText(listWaiting ? "Looking for screens…" : "No other screen takes calls", w / 2f, h / 2f, text);
+            text.setTextAlign(Paint.Align.LEFT);
+            return;
+        }
+        String me = app.screen().node();
+        for (final Tessera.Contact r : contactRows) {
+            if (r.id.equals(me)) continue;
+            if (y + rowH > h - pad) break;
+            RectF row = new RectF(pad, y, w - pad, y + rowH - pad);
+            fill.setColor(0xFF1C1F26);
+            c.drawRoundRect(row, 2.4f * u, 2.4f * u, fill);
+            boolean callable = r.sound && r.state.equals("free");
+            text.setTypeface(medium);
+            text.setTextSize(4.4f * u);
+            text.setColor(callable ? 0xFFFFFFFF : 0xFF8A919C);
+            float keyD = row.height() * 0.72f, keysW = keyD * 2 + pad * 2;
+            String words = contactWords(r);
+            float ty = words.isEmpty() ? row.centerY() + 1.6f * u : row.centerY() - 0.4f * u;
+            c.drawText(fit(r.name, row.width() - keysW - 6 * u), row.left + 4 * u, ty, text);
+            if (!words.isEmpty()) {
+                text.setTypeface(regular);
+                text.setTextSize(3.4f * u);
+                text.setColor(r.missed > 0 ? 0xFFE5484D : 0xFF8A919C);
+                c.drawText(words, row.left + 4 * u, row.centerY() + 4 * u, text);
+            }
+            float kx = row.right - pad - keyD / 2;
+            if (r.video && callable) {
+                callKey(c, kx, row.centerY(), keyD, 0xFF30A46C, "video", null, new Runnable() {
+                    public void run() { dial(r.id, true); }
+                });
+                kx -= keyD + pad;
+            }
+            if (callable) {
+                callKey(c, kx, row.centerY(), keyD, 0xFF30A46C, "phone", null, new Runnable() {
+                    public void run() { dial(r.id, false); }
+                });
+            }
+            y += rowH;
+        }
+    }
+
+    // ----- the doorbell's Talk (docs/DOORBELL.md "Talk"): the tablet's voice to the doorbell's speaker -----
+
+    private boolean talking;
+    private static final long TALK_QUIET_MS = 60000;
+
+    private void startTalk(Tessera.Ring r) {
+        Voice.Uplink v = Voice.uplink;
+        if (v == null || r.talk.isEmpty()) return;
+        if (v.start(r.talk)) {
+            talking = true;
+            invalidate();
+        }
+    }
+
+    private void stopTalk() {
+        Voice.Uplink v = Voice.uplink;
+        if (v != null) v.stop();
+        talking = false;
+        invalidate();
+    }
+
+    /**
+     * A tap turns it on and a tap off, as a held finger would cover the key. Connecting it is blue and says so, live it
+     * says Talking with the voice's level, and it goes off after a minute without a voice and with the view.
+     */
+    private void drawTalkKey(Canvas c, RectF k, final Tessera.Ring r) {
+        Voice.Uplink v = Voice.uplink;
+        int st = v == null ? Voice.OFF : v.state();
+        if (talking && st == Voice.LIVE && SystemClock.uptimeMillis() - v.lastVoice() > TALK_QUIET_MS) {
+            stopTalk();
+            st = Voice.OFF;
+        }
+        if (talking && (st == Voice.OFF || st == Voice.BUSY || st == Voice.FAILED)) {
+            talking = false;
+        }
+        boolean on = st == Voice.CONNECTING || st == Voice.LIVE;
+        String words = st == Voice.CONNECTING ? "Connecting\u2026"
+                : st == Voice.LIVE ? "Talking"
+                : st == Voice.BUSY ? "Someone else is talking"
+                : st == Voice.FAILED ? "Talk didn't connect" : "Talk";
+        fill.setColor(on ? Style.BLUE : 0xFF2C313B);
+        float rad = Math.min(k.height(), k.width()) * 0.22f;
+        c.drawRoundRect(k, rad, rad, fill);
+        float iconSize = Math.min(k.height() * 0.32f, 9 * u);
+        boolean wide = k.width() > k.height() * 1.6f;
+        float ix = wide ? k.left + k.width() * 0.22f : k.centerX();
+        float iy = wide ? k.centerY() + iconSize * 0.36f : k.centerY() - iconSize * 0.2f;
+        glyphs.setColor(0xFFFFFFFF);
+        glyphs.setTextSize(iconSize);
+        c.drawText(Icons.sure(getContext(), on ? "microphone" : "microphone-outline"), ix, iy, glyphs);
+        text.setTypeface(medium);
+        text.setTextSize(Math.min(4.2f * u, k.height() * 0.16f));
+        text.setColor(0xFFFFFFFF);
+        text.setTextAlign(wide ? Paint.Align.LEFT : Paint.Align.CENTER);
+        float tx = wide ? ix + iconSize * 0.8f : k.centerX(), ty = wide ? k.centerY() + text.getTextSize() * 0.36f : iy + iconSize * 0.9f;
+        String shown = fit(words, wide ? k.right - tx - 2 * u : k.width() - 2 * u);
+        c.drawText(shown, tx, ty, text);
+        // The voice's level at the end of the words while it talks.
+        if (st == Voice.LIVE && v != null) {
+            float lx = wide ? tx + text.measureText(shown) + 2 * u : k.centerX() - 6 * u, ly = wide ? k.centerY() : ty + 2.5f * u;
+            float lw = wide ? Math.min(14 * u, k.right - lx - 2 * u) : 12 * u;
+            if (lw > 2 * u) {
+                fill.setColor(0x55FFFFFF);
+                c.drawRoundRect(new RectF(lx, ly - 0.6f * u, lx + lw, ly + 0.6f * u), 0.6f * u, 0.6f * u, fill);
+                fill.setColor(0xFFFFFFFF);
+                c.drawRoundRect(new RectF(lx, ly - 0.6f * u, lx + lw * v.level(), ly + 0.6f * u), 0.6f * u, 0.6f * u, fill);
+            }
+        }
+        text.setTextAlign(Paint.Align.LEFT);
+        Hit hit = new Hit(k);
+        hit.tap = new Runnable() {
+            public void run() {
+                if (talking) stopTalk();
+                else startTalk(r);
+            }
+        };
+        hits.add(hit);
+        if (on || talking) {
+            ui.postDelayed(new Runnable() {
+                public void run() { invalidate(); }
+            }, 100);
+        }
     }
 
     private void drawRingPicture(Canvas c, Tessera.Ring r, RectF room) {
@@ -4032,6 +4840,14 @@ public final class TileView extends View {
 
     private void route(int index, Tessera.Tile t, boolean hold) {
         String d = t.domain(), e = t.entity;
+        // The Call tile (docs/CALLS.md, "The Call tile"): the list of screens, or straight to the one it is set to.
+        if (e.equals("screen.call")) {
+            Object to = t.options.get("call_to"), kind = t.options.get("call_kind");
+            String target = to instanceof String ? ((String) to).trim() : "";
+            if (target.isEmpty()) openCallList();
+            else dial(target, !"sound".equals(kind));
+            return;
+        }
         if (e.startsWith("screen.page_")) {
             try {
                 int target = Integer.parseInt(e.substring("screen.page_".length())) - 1;
@@ -4245,7 +5061,11 @@ public final class TileView extends View {
             host.openWidgets();
             return;
         }
-        if (next < 0 || next >= inc.size()) return;
+        if (next < 0 || next >= inc.size()) {
+            // Loop pages: past the last comes the first, and before the first the last.
+            if (!app.screen().screenSettings.loopPages() || inc.size() < 2) return;
+            next = (next + inc.size()) % inc.size();
+        }
         go(inc.get(next));
     }
 

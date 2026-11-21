@@ -36,7 +36,8 @@ public final class EspDevice {
             LIST_TEXT = 97, TEXT_STATE = 98, TEXT_CMD = 99, HA_ACTION_RESP = 130, EXECUTE_SERVICE_RESP = 131,
             SET_KEY_REQ = 124, SET_KEY_RESP = 125,
             LIST_SELECT = 52, SELECT_STATE = 53, SELECT_CMD = 54, LIST_BUTTON = 61, BUTTON_CMD = 62,
-            LIST_TIME = 103, TIME_STATE = 104, TIME_CMD = 105;
+            LIST_TIME = 103, TIME_STATE = 104, TIME_CMD = 105,
+            LIST_MEDIA_PLAYER = 63, MEDIA_PLAYER_STATE = 64, MEDIA_PLAYER_CMD = 65;
 
     public static final int API_MAJOR = 1, API_MINOR = 12;
     public static final String ESPHOME_VERSION = "2026.5.1";
@@ -319,6 +320,65 @@ public final class EspDevice {
     }
 
     /** A time of day (ESPHome's datetime platform, type time). */
+    /**
+     * ESPHome's media player (api.proto ListEntitiesMediaPlayerResponse, MediaPlayerStateResponse,
+     * MediaPlayerCommandRequest), as a Tessera P4 screen has it ("Media Player", packages/features/audio-player.yaml):
+     * Home Assistant plays a link on it, announces on it and sets its volume. No supported formats are named, so Home
+     * Assistant hands over the link as it is and the tablet's own decoders play it, with no proxy transcoding it.
+     */
+    public static final class MediaPlayer extends Entity {
+        public static final int IDLE = 1, PLAYING = 2, PAUSED = 3, ANNOUNCING = 4;
+        public static final int PLAY = 0, PAUSE = 1, STOP = 2, MUTE = 3, UNMUTE = 4, TOGGLE = 5, VOLUME_UP = 6, VOLUME_DOWN = 7,
+                TURN_ON = 12, TURN_OFF = 13;
+        /**
+         * Home Assistant's MediaPlayerEntityFeature: PAUSE 1, VOLUME_SET 4, VOLUME_MUTE 8, PLAY_MEDIA 512, VOLUME_STEP 1024,
+         * STOP 4096, PLAY 16384, BROWSE_MEDIA 131072, MEDIA_ANNOUNCE 1048576 (what ESPHome's speaker media player offers).
+         */
+        static final int FEATURES = 1 | 4 | 8 | 512 | 1024 | 4096 | 16384 | 131072 | 1048576;
+
+        public interface Listener {
+            /** A command (PLAY ... TURN_OFF). */
+            void command(int command);
+            void volume(float volume);
+            /** A link to play; `announcement` plays over the music, which goes on after it. */
+            void play(String url, boolean announcement);
+        }
+        public Listener listener;
+        private volatile int playerState = IDLE;
+        private volatile float volume = 0.5f;
+        private volatile boolean muted;
+
+        public MediaPlayer(String objectId, String name) { super(objectId, name); }
+
+        public void set(int state, float volume, boolean muted) {
+            this.playerState = state;
+            this.volume = volume;
+            this.muted = muted;
+            publish();
+        }
+
+        int listType() { return LIST_MEDIA_PLAYER; }
+
+        Pb.Out describe() {
+            return new Pb.Out().string(1, objectId).key(2, key()).string(3, name).string(5, icon).varint(7, category)
+                    .bool(8, true).varint(11, FEATURES);
+        }
+
+        int stateType() { return MEDIA_PLAYER_STATE; }
+
+        Pb.Out state() { return new Pb.Out().key(1, key()).varint(2, playerState).flt(3, volume).bool(4, muted); }
+
+        void command(List<Pb.Field> f) {
+            Listener l = listener;
+            if (l == null) return;
+            Pb.Field hasVolume = Pb.first(f, 4), vol = Pb.first(f, 5), hasUrl = Pb.first(f, 6), url = Pb.first(f, 7),
+                    hasCommand = Pb.first(f, 2), cmd = Pb.first(f, 3), ann = Pb.first(f, 9);
+            if (hasVolume != null && hasVolume.varint != 0 && vol != null) l.volume(Math.max(0f, Math.min(1f, vol.flt())));
+            if (hasUrl != null && hasUrl.varint != 0 && url != null) l.play(url.text(), ann != null && ann.varint != 0);
+            if (hasCommand != null && hasCommand.varint != 0) l.command(cmd == null ? 0 : (int) cmd.varint);
+        }
+    }
+
     public static final class Time extends Entity {
         private volatile int minutes = -1;
         public interface OnSet { void set(int minutesOfDay); }
@@ -731,7 +791,8 @@ public final class EspDevice {
                 case SWITCH_CMD:
                 case SELECT_CMD:
                 case BUTTON_CMD:
-                case TIME_CMD: {
+                case TIME_CMD:
+                case MEDIA_PLAYER_CMD: {
                     Pb.Field k = Pb.first(f, 1);
                     if (k == null) return true;
                     Entity target = null;

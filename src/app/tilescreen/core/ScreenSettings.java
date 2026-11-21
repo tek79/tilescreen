@@ -38,7 +38,8 @@ public final class ScreenSettings {
     // The values, with Tessera's defaults.
     private int brightness = 100, standbyEnabled = 1, standbySeconds = 600, standbyBrightness = 20, nightEnabled = 1,
             nightStart = 1320, nightEnd = 420, nightBrightness = 10, homeOnStandby = 0, swipePages = 0, rotation = 0,
-            autoHome = 1, autoHomeSeconds = 120, darkMode = 0, pageButtons = 1, homeButton = 1;
+            autoHome = 1, autoHomeSeconds = 120, darkMode = 0, pageButtons = 1, homeButton = 1, loopPages = 1,
+            callRingtone = 1, callSwitching = 1, doNotDisturb = 0;
     // This app's own, not Tessera's: Android's screen timeout and screensaver instead of Tessera's standby.
     private int androidSaver = 0;
     /** The app's own too: a tile's icon toggles it and a tap anywhere else opens its card. */
@@ -61,14 +62,14 @@ public final class ScreenSettings {
     public volatile Runnable onSleep;
 
     private final EspDevice.Number eBrightness, eStandbyBrightness, eNightBrightness, eStandbySeconds, eAutoHomeSeconds;
-    private final EspDevice.Switch eStandby, eNight, eDark, eAutoHome, eHomeOnStandby, eSwipe, ePageButtons, eHomeButton, eAndroidSaver, eIconToggles, eSystemBrightness, eLiftWake, eBatteryDark, eTapSound, eWasteInBar;
+    private final EspDevice.Switch eStandby, eNight, eDark, eAutoHome, eHomeOnStandby, eSwipe, ePageButtons, eHomeButton, eLoopPages, eCallRingtone, eCallSwitching, eDoNotDisturb, eAndroidSaver, eIconToggles, eSystemBrightness, eLiftWake, eBatteryDark, eTapSound, eWasteInBar;
     private final EspDevice.Number eWasteDays;
     private final EspDevice.Time eNightStart, eNightEnd;
     private final EspDevice.Select eRotation;
 
     // Standby (core.yaml): last_touch_ms counts the standby time, last_use_ms Back to page 1.
     private long lastTouch = System.currentTimeMillis(), lastUse = System.currentTimeMillis();
-    private boolean dimmed, sleepRequested, alertActive, ringActive, touchDown;
+    private boolean dimmed, sleepRequested, alertActive, ringActive, callActive, touchDown;
 
     public ScreenSettings(EspDevice device, Store store, EspDevice.Logger log, Map<String, Integer> defaults) {
         this.store = store;
@@ -90,6 +91,12 @@ public final class ScreenSettings {
         eSwipe = toggle(device, "swipe_between_pages", "Swipe between pages", "mdi:gesture-swipe-horizontal", "swipe_pages");
         ePageButtons = toggle(device, "page_buttons", "Page buttons", "mdi:page-next-outline", "page_buttons");
         eHomeButton = toggle(device, "show_home_button", "Show home button", "mdi:home", "home_button");
+        // Tessera's Loop pages (firmware 0.61.0, on by default): past the last page comes the first, by swipe and by arrow.
+        eLoopPages = toggle(device, "loop_pages", "Loop pages", "mdi:sync", "loop_pages");
+        // Calls between screens (docs/CALLS.md): the add-on reads Do not disturb by its name; the others are the screen's.
+        eCallRingtone = toggle(device, "call_ringtone", "Call ringtone", "mdi:phone-ring", "call_ringtone");
+        eCallSwitching = toggle(device, "call_voice_switching", "Call voice switching", "mdi:account-voice", "call_voice_switching");
+        eDoNotDisturb = toggle(device, "do_not_disturb", "Do not disturb", "mdi:minus-circle-outline", "do_not_disturb");
         // Not one of Tessera's settings (its panel doesn't list it); a name of its own so it never clashes with one.
         eAndroidSaver = toggle(device, "use_android_screensaver", "Use Android screensaver", "mdi:android", "android_saver");
         eIconToggles = toggle(device, "icon_toggles_tap_opens", "Icon toggles, tap opens controls", "mdi:gesture-tap-button", "icon_toggles");
@@ -233,6 +240,10 @@ public final class ScreenSettings {
         else if (key.equals("dark_mode")) darkMode = flag(value);
         else if (key.equals("page_buttons")) pageButtons = flag(value);
         else if (key.equals("home_button")) homeButton = flag(value);
+        else if (key.equals("loop_pages")) loopPages = flag(value);
+        else if (key.equals("call_ringtone")) callRingtone = flag(value);
+        else if (key.equals("call_voice_switching")) callSwitching = flag(value);
+        else if (key.equals("do_not_disturb")) doNotDisturb = flag(value);
         else if (key.equals("android_saver")) {
             androidSaver = flag(value);
             if (androidSaver != 0) { dimmed = false; sleepRequested = false; }
@@ -266,6 +277,10 @@ public final class ScreenSettings {
         m.put("dark_mode", (double) darkMode);
         m.put("page_buttons", (double) pageButtons);
         m.put("home_button", (double) homeButton);
+        m.put("loop_pages", (double) loopPages);
+        m.put("call_ringtone", (double) callRingtone);
+        m.put("call_voice_switching", (double) callSwitching);
+        m.put("do_not_disturb", (double) doNotDisturb);
         m.put("android_saver", (double) androidSaver);
         m.put("icon_toggles", (double) iconToggles);
         m.put("system_brightness", (double) systemBrightness);
@@ -291,11 +306,11 @@ public final class ScreenSettings {
     }
 
     private void publish() {
-        int b, sb, nb, ss, ah, st, ne, nst, nen, dk, ahm, hos, sw, pb, hb, rot, as, it, sys, lw, bd, ts, wb, wd;
+        int b, sb, nb, ss, ah, st, ne, nst, nen, dk, ahm, hos, sw, pb, hb, lp, cr, cs, dnd, rot, as, it, sys, lw, bd, ts, wb, wd;
         synchronized (this) {
             b = brightness; sb = standbyBrightness; nb = nightBrightness; ss = standbySeconds; ah = autoHomeSeconds;
             st = standbyEnabled; ne = nightEnabled; nst = nightStart; nen = nightEnd; dk = darkMode; ahm = autoHome;
-            hos = homeOnStandby; sw = swipePages; pb = pageButtons; hb = homeButton; rot = rotation; as = androidSaver; it = iconToggles;
+            hos = homeOnStandby; sw = swipePages; pb = pageButtons; hb = homeButton; lp = loopPages; cr = callRingtone; cs = callSwitching; dnd = doNotDisturb; rot = rotation; as = androidSaver; it = iconToggles;
             sys = systemBrightness; lw = liftWake; bd = batteryDark;
             ts = tapSound; wb = wasteInBar; wd = wasteDaysAhead;
         }
@@ -312,6 +327,10 @@ public final class ScreenSettings {
         eSwipe.set(sw != 0);
         ePageButtons.set(pb != 0);
         eHomeButton.set(hb != 0);
+        eLoopPages.set(lp != 0);
+        eCallRingtone.set(cr != 0);
+        eCallSwitching.set(cs != 0);
+        eDoNotDisturb.set(dnd != 0);
         eNightStart.set(nst);
         eNightEnd.set(nen);
         eRotation.set(rot + "°");
@@ -345,6 +364,10 @@ public final class ScreenSettings {
         if (key.equals("dark_mode")) return darkMode;
         if (key.equals("page_buttons")) return pageButtons;
         if (key.equals("home_button")) return homeButton;
+        if (key.equals("loop_pages")) return loopPages;
+        if (key.equals("call_ringtone")) return callRingtone;
+        if (key.equals("call_voice_switching")) return callSwitching;
+        if (key.equals("do_not_disturb")) return doNotDisturb;
         if (key.equals("android_saver")) return androidSaver;
         if (key.equals("icon_toggles")) return iconToggles;
         if (key.equals("system_brightness")) return systemBrightness;
@@ -363,6 +386,12 @@ public final class ScreenSettings {
     public synchronized boolean pageButtons() { return pageButtons != 0; }
 
     public synchronized boolean homeButton() { return homeButton != 0; }
+
+    public synchronized boolean loopPages() { return loopPages != 0; }
+
+    public synchronized boolean callRingtone() { return callRingtone != 0; }
+
+    public synchronized boolean callSwitching() { return callSwitching != 0; }
 
     public synchronized int rotation() { return rotation; }
 
@@ -423,7 +452,7 @@ public final class ScreenSettings {
     public void tick() {
         boolean due;
         synchronized (this) {
-            due = standbyEnabled != 0 && androidSaver == 0 && !dimmed && !touchDown && !alertActive && !ringActive
+            due = standbyEnabled != 0 && androidSaver == 0 && !dimmed && !touchDown && !alertActive && !ringActive && !callActive
                     && System.currentTimeMillis() - lastTouch > standbySeconds * 1000L;
         }
         if (due) dim();
@@ -434,7 +463,7 @@ public final class ScreenSettings {
 
     /** Whether Back to page 1 is due: it's on, the screen is lit, and nobody touched it for long enough. */
     public synchronized boolean homeDue() {
-        return autoHome != 0 && !dimmed && !touchDown && !alertActive && !ringActive
+        return autoHome != 0 && !dimmed && !touchDown && !alertActive && !ringActive && !callActive
                 && System.currentTimeMillis() - lastUse > autoHomeSeconds * 1000L;
     }
 
@@ -516,6 +545,18 @@ public final class ScreenSettings {
     public void ringing(boolean up) {
         synchronized (this) {
             ringActive = up;
+            if (up) wakeLocked(); else lastTouch = lastUse = System.currentTimeMillis();
+        }
+        Ui u = ui;
+        if (up && u != null && androidSaver()) u.systemWake();
+        apply();
+    }
+
+    /** A call (docs/CALLS.md) wakes the screen and holds standby and Back to page 1 off while it is up. */
+    public void calling(boolean up) {
+        synchronized (this) {
+            if (callActive == up) return;
+            callActive = up;
             if (up) wakeLocked(); else lastTouch = lastUse = System.currentTimeMillis();
         }
         Ui u = ui;

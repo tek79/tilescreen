@@ -8,7 +8,7 @@ It is built for low-memory tablets such as the 5th-gen Fire 7 running LineageOS.
 view and no Home Assistant app inside it: a small native app draws the tiles itself. It should run
 on Android 4.2 and later.
 
-This guide covers version 0.14.0.
+This guide covers version 0.16.3.
 
 ## 1. Install it on the tablet
 
@@ -91,6 +91,8 @@ device. Change them in Tessera (open the screen, then **Settings**) or from Home
 - **Back to page 1** and **Back to page 1 after**, and **Back to page 1 on standby**
 - **Swipe between pages**, **Page buttons** (the Previous and Next bar), **Show home button**, **Rotation**
   (0° or 180°)
+- **Loop pages** (on by default): after the last page comes the first, and before the first the last, by swipe and by
+  the Previous and Next keys
 
 The **Wake** and **Sleep** buttons are for automations. Wake lights a dimmed screen, and on a lit one
 the standby time starts again from then. Sleep dims the screen now, without the screensaver, even with
@@ -203,6 +205,56 @@ group, or pick its face in the Screensaver card.
 | AV wall panel controls | 0.1.1 | Five tiles of keys: transport, D-pad, volume or channel, a number pad and a selector grid. Each key runs the action typed for it in the editor, such as `remote.send_command command=UP`. |
 
 A plugin's tiles use the tablet's permission to perform Home Assistant actions, as every control does.
+
+## Alarm panels and locks with a code
+
+An alarm panel's card has a key for each mode the panel supports (Home, Away, Night, Vacation, Custom, and Disarm),
+the current one lit in the state's colour. A mode that asks for a code opens a keypad, as in Home Assistant's own
+dialog: only where the panel has a code format, and not when Home Assistant keeps a default code for it. The keypad's
+keys are as large as the card allows, up to a phone keypad's size; **Delete** takes back the last digit and **OK**
+sends the code. The code goes to Home Assistant as the action's `code` and is wiped from the screen at once; it is never
+logged or kept. After three wrong codes the keypad locks for 30 seconds, then twice as long after each further one, up
+to 15 minutes. A lock with a code gets the same keypad for Lock, Unlock and Open.
+
+When the alarm counts someone in (pending) or goes off (triggered), the tablet wakes with the keypad open on red and
+the time left, so you can disarm at once. No automation is needed. In Tessera's **Events → Alarm** tab you can:
+
+- choose which screens open the keypad by themselves. A tablet that is left out stays quiet, but its tile still opens
+  the card;
+- have the code send itself after 4 to 8 digits, so there is no OK key and the keypad shows exactly that many dots.
+  Choose this only when every code of that alarm has that many digits.
+
+A tablet only opens the keypad for an alarm that is on one of its pages.
+
+## Sound: the speaker, Talk and calls
+
+**Media player.** The screen's device in Home Assistant has a **Media Player**, as a Tessera ESP32-P4 screen does. Send
+it text to speech, a chime, a radio stream or a file (`media_player.play_media`, `tts.speak`, or an announcement) and the
+tablet plays it with Android's own player. An announcement pauses the music, which carries on after it. Its volume is the
+tablet's media volume, so the tablet's own keys and Home Assistant's slider move the same thing.
+
+**Talk to the doorbell.** When Home Assistant offers two-way audio for the doorbell's camera (Settings, Labs, Two-way
+audio, 2026.11 and later) and the tablet has a microphone, the doorbell's view has a **Talk** key. A tap turns it on and a
+tap turns it off. It turns blue while it connects and says **Talking** with the level of your voice; it stops when the
+view closes or after a minute without a voice. Some doorbells play the voice a few seconds late; that delay is the
+camera's.
+
+**Calls between screens.** A **Call** tile (from the library's built-in tiles) opens the list of screens that take calls,
+tablets and ESP32-P4 screens alike, or calls one chosen screen at once. A call coming in rings, wakes the screen and shows
+who calls, with Answer and Decline. In a call:
+
+- **Mute** turns your microphone off and on, and **Hang up** ends the call.
+- Two small keys at the top right are voice switching (one person speaks at a time, so the voice doesn't echo back) and
+  echo cancelling. Either one changes it for both screens.
+- When the other screen has a camera (Tessera's Screen camera plugin with Video), its picture shows beside the keys. The
+  tablet doesn't send its own camera yet.
+
+The screen's switches **Call ringtone** (off: a call lights the screen up without a sound), **Call voice switching** and
+**Do not disturb** (calls to it are refused, and the list says so) are on its settings page and in Home Assistant. Home
+Assistant gets the add-on's events `esp_screens_call_started`, `_answered`, `_missed` and `_ended`.
+
+The microphone is open only while Talk or a call is on. Android's own echo canceller and noise suppressor are used where
+the tablet has them, and the tablet tells Tessera whether it has a microphone and an echo canceller.
 
 ## Live cameras
 

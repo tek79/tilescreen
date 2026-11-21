@@ -29,6 +29,8 @@ public class RenderMain {
             public void ring(Tessera.Ring r) { System.out.println("[ui] ring " + r.name); view[0].ring(r); }
             public void closeRing(String key) { view[0].closeRing(key); }
             public void ringDoorState(String key, String state) { view[0].ringDoorState(key, state); }
+            public void call(app.tilescreen.core.Tessera.Call c) { view[0].call(c); }
+            public void contacts(java.util.List<app.tilescreen.core.Tessera.Contact> rows, boolean append, boolean more) { view[0].contacts(rows, append, more); }
             public void show(String what) { System.out.println("[ui] show " + what); app.screen.showing(what); }
         });
         app.screen.screenSettings.setUi(new ScreenSettings.Ui() {

@@ -23,7 +23,9 @@ public final class Tessera {
     static final int REFRESH_DEFAULT = 15, REFRESH_LEAST = 5, REFRESH_MOST = 3600;
     static final String[] FEATURES = {"climate_range", "bar_status", "weather_week", "media_rows", "media_library",
             "screensaver", "saver_items", "saver_photos", "clock_faces", "saver_keys",
-            "vacuum_card", "pictures", "live", "doorbell", "light_presets", "text_card", "calendar_detail", "vacuum_tile", "plugins"};
+            "vacuum_card", "pictures", "live", "doorbell", "light_presets", "text_card", "calendar_detail", "vacuum_tile", "plugins",
+            // Calls between screens (docs/CALLS.md): the list, ringing, and a call's voice both ways and the other's picture.
+            "call"};
 
     /**
      * How many camera tiles this screen streams at once (the hello's caps.live_tiles): the tablet's own setting. The add-on
@@ -33,6 +35,8 @@ public final class Tessera {
 
     /** Whether this tablet has a battery (Android's BatteryManager): the hello says `battery`. */
     public static volatile boolean hasBattery;
+    /** The tablet's sound (caps speaker, microphone, echo_cancel): Talk and calls are offered by what these say. */
+    public static volatile boolean hasSpeaker = true, hasMicrophone, echoCancel;
     /** The battery's level in percent from its last broadcast, -1 before one. */
     public static volatile int batteryLevel = -1;
 
@@ -340,10 +344,38 @@ public final class Tessera {
      */
     public static final class Ring {
         public String camera = "", name = "", key = "", doorState = "", link = "";
+        /** Where Talk sends this screen's voice (`tk`: /camera/<token>/talk), empty when the view has no Talk key. */
+        public String talk = "";
         public long rang;
         public int timeout = 60, door;
         public boolean quiet, chime = true;
     }
+
+    /** The op `call` (docs/CALLS.md, calls.message): a call's state as the add-on holds it. */
+    public static final class Call {
+        /** out, ring, live, held, end, or set (only the call's choices). */
+        public String state = "", key = "", name = "", icon = "", link = "", talk = "", why = "";
+        public boolean video, peerCamera = true;
+        /** Voice switching and echo cancelling for the call, -1 where the message doesn't say. */
+        public int voiceSwitch = -1, echo = -1;
+    }
+
+    /** A screen in the list (the op `contacts`): `sound`/`video` it can be called with now; `state` free, busy, quiet, offline. */
+    public static final class Contact {
+        public String id = "", name = "", icon = "", state = "";
+        public boolean sound, video;
+        public long missed;
+    }
+
+    public interface Calls {
+        void call(Call c);
+        /** A part of the list; `append` after the parts before, `more` while parts are still to come. */
+        void contacts(List<Contact> rows, boolean append, boolean more);
+    }
+
+    private volatile Calls calls;
+
+    public void setCalls(Calls c) { calls = c; }
 
     public interface Doorbell {
         void ring(Ring r);
@@ -522,6 +554,8 @@ public final class Tessera {
         }
         if (op.equals("camera")) return answerPicture(m, status);
         if (op.equals("doorbell")) return doorbell(m, status);
+        if (op.equals("call")) return call(m, status);
+        if (op.equals("contacts")) return contacts(m, status);
         if (op.equals("calendar_event")) return calendarEvent(m, status);
         if (op.equals("plugin")) {
             String plugin = Json.str(m, "p");
@@ -571,6 +605,54 @@ public final class Tessera {
     }
 
     /** The op `doorbell` (page_receiver.cpp): a ring, its close (`c`), or its lock's new state (`ds` alone). */
+    private boolean call(Map<String, Object> m, String[] status) {
+        Call c = new Call();
+        c.state = nz(Json.str(m, "s"));
+        c.key = cut(nz(Json.str(m, "k")), 40);
+        if (c.state.isEmpty()) return false;
+        c.name = cut(nz(Json.str(m, "n")), 60);
+        c.icon = cut(nz(Json.str(m, "i")), 8);
+        Integer vd = Json.integer(m, "vd"), pc = Json.integer(m, "pc"), vs = Json.integer(m, "vs"), ec = Json.integer(m, "ec");
+        c.video = vd != null && vd == 1;
+        c.peerCamera = pc == null || pc == 1;
+        c.voiceSwitch = vs == null ? -1 : vs;
+        c.echo = ec == null ? -1 : ec;
+        c.link = cut(nz(Json.str(m, "l")), 240);
+        c.talk = cut(nz(Json.str(m, "tk")), 240);
+        c.why = cut(nz(Json.str(m, "w")), 20);
+        if (!c.state.equals("set")) log.log("call: " + c.state + (c.name.isEmpty() ? "" : " " + c.name) + (c.why.isEmpty() ? "" : " (" + c.why + ")"));
+        Calls l = calls;
+        if (l != null) l.call(c);
+        status[0] = "Synced";
+        return true;
+    }
+
+    private boolean contacts(Map<String, Object> m, String[] status) {
+        List<Object> rows = Json.arr(m.get("r"));
+        if (rows == null) return false;
+        List<Contact> out = new ArrayList<Contact>();
+        for (Object o : rows) {
+            Map<String, Object> r = Json.obj(o);
+            if (r == null) continue;
+            Contact c = new Contact();
+            c.id = cut(nz(Json.str(r, "id")), 40);
+            c.name = cut(nz(Json.str(r, "n")), 40);
+            c.icon = cut(nz(Json.str(r, "i")), 8);
+            c.state = cut(nz(Json.str(r, "s")), 10);
+            Integer a = Json.integer(r, "a"), v = Json.integer(r, "v");
+            c.sound = a != null && a == 1;
+            c.video = v != null && v == 1;
+            Double missed = Json.dbl(r, "m");
+            c.missed = missed == null ? 0 : missed.longValue();
+            if (!c.id.isEmpty()) out.add(c);
+        }
+        Integer p = Json.integer(m, "p"), more = Json.integer(m, "more");
+        Calls l = calls;
+        if (l != null) l.contacts(out, p != null && p > 0, more != null && more == 1);
+        status[0] = "Synced";
+        return true;
+    }
+
     private boolean doorbell(Map<String, Object> m, String[] status) {
         String key = cut(nz(Json.str(m, "k")), 16);
         if (key.isEmpty()) return false;
@@ -599,7 +681,8 @@ public final class Tessera {
             r.quiet = quiet != null && quiet == 1;
             r.chime = !(nc != null && nc == 1);
             r.link = cut(nz(Json.str(m, "l")), 200);
-            log.log("doorbell: " + r.name + " rang (" + camera + ")");
+            r.talk = cut(nz(Json.str(m, "tk")), 200);
+            log.log("doorbell: " + r.name + " rang (" + camera + ")" + (r.talk.isEmpty() ? "" : ", Talk offered"));
             if (d != null) d.ring(r);
         }
         status[0] = "Synced";
@@ -904,6 +987,10 @@ public final class Tessera {
         Map<String, Object> caps = new LinkedHashMap<String, Object>();
         caps.put("live", true);
         caps.put("live_tiles", (double) Math.max(0, Math.min(8, liveTiles)));
+        // Its speaker and microphone (docs/CALLS.md): the doorbell's Talk and calls between screens go by these.
+        caps.put("speaker", hasSpeaker);
+        caps.put("microphone", hasMicrophone);
+        caps.put("echo_cancel", echoCancel);
         // Template tiles (docs/TEXT_TILE.md, "Limits"): as many as a P4, and a P4's bytes of rows.
         caps.put("text_tiles", 8.0);
         caps.put("text_bytes", 3584.0);

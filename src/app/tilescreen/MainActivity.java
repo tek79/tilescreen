@@ -59,6 +59,8 @@ public final class MainActivity extends Activity implements Screen.Ui, ScreenSet
                 | WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON);
         startService(new Intent(this, ScreenService.class));
         view = new TileView(this, this);
+        // A live call's pictures and voice from the add-on (docs/CALLS.md), only while a call is live.
+        if (TileView.callMedia == null) TileView.callMedia = new CallStream(this);
         lift = new Lift(this, new Lift.Moved() {
             public void moved(String how) {
                 app.log("lift to wake: " + how);
@@ -365,6 +367,47 @@ public final class MainActivity extends Activity implements Screen.Ui, ScreenSet
     public void closeRing(String key) { view.closeRing(key); }
 
     public void ringDoorState(String key, String state) { view.ringDoorState(key, state); }
+
+    // ----- calls between screens (docs/CALLS.md) -----
+
+    private Runnable ringing;
+    private long ringingSince;
+
+    /**
+     * A call's state: the tiles come to the front for it, and a call coming in rings every three seconds for at most a
+     * minute, unless the screen's Call ringtone is off (then it lights up and shows who calls, without a sound).
+     */
+    public void call(final Tessera.Call c) {
+        main.post(new Runnable() {
+            public void run() {
+                if (c.state.equals("ring") || c.state.equals("out")) show(Screen.TILES);
+                if (c.state.equals("ring")) startRinging();
+                else if (!c.state.equals("set")) stopRinging();
+                view.call(c);
+            }
+        });
+    }
+
+    public void contacts(java.util.List<Tessera.Contact> rows, boolean append, boolean more) { view.contacts(rows, append, more); }
+
+    private void startRinging() {
+        stopRinging();
+        if (!app.screen().screenSettings.callRingtone()) return;
+        ringingSince = android.os.SystemClock.uptimeMillis();
+        ringing = new Runnable() {
+            public void run() {
+                if (ringing != this || android.os.SystemClock.uptimeMillis() - ringingSince > 60000) return;
+                Chime.ringtone();
+                main.postDelayed(this, 3000);
+            }
+        };
+        main.post(ringing);
+    }
+
+    private void stopRinging() {
+        if (ringing != null) main.removeCallbacks(ringing);
+        ringing = null;
+    }
 
     public void changed() { view.changed(); }
 
