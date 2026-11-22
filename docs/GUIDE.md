@@ -8,7 +8,7 @@ It is built for low-memory tablets such as the 5th-gen Fire 7 running LineageOS.
 view and no Home Assistant app inside it: a small native app draws the tiles itself. It should run
 on Android 4.2 and later.
 
-This guide covers version 0.20.0.
+This guide covers version 0.24.0.
 
 ## 1. Install it on the tablet
 
@@ -184,10 +184,11 @@ Other limits:
   | 1280 x 720 (16:9) | `tab5` | 16:9 tablets |
 
   The shape only sets the editor's preview and what Tessera offers: the tablet draws at its own size, so the editor's
-  text can look larger or smaller than on the tablet. Changing the shape doesn't change the grid. Tessera also offers
-  plugins for hardware a tablet lacks (Screen camera); added, they show as not running. Voice assistant and Bluetooth
-  proxy are ones Tile Screen carries, on a tablet with a microphone or Bluetooth LE (see **The voice assistant** and
-  **The Bluetooth proxy**).
+  text can look larger or smaller than on the tablet. Changing the shape doesn't change the grid. Tessera offers
+  Screen camera only for the shapes whose board has a camera (all but the square one), and may offer plugins for
+  hardware a tablet lacks; added, they show as not running. Voice assistant, Bluetooth proxy and Screen camera are ones
+  Tile Screen carries, on a tablet with a microphone, Bluetooth LE or a camera (see **The voice assistant**, **The
+  Bluetooth proxy** and **Screen camera**).
 - A square screen has one grid whichever way it hangs, as Tessera's square boards, and starts at Tessera's 2×3.
 - The grid defaults to 4×3 in landscape (3×4 in portrait). Choose it in Tessera's editor (the screen's Settings → Grid, from 1×1 to 8×8, and Landscape or Portrait), as for an ESP32 screen; the tablet takes it when you save. The tablet's own settings set the landscape grid too.
 - **Deleting the screen from Home Assistant:** the tablet keeps its encryption key. To add it again,
@@ -210,6 +211,7 @@ group, or pick its face in the Screensaver card.
 | Thermo dial | 0.2.0 | A climate tile with the target large and - / mode / + keys, and a card with a dial to drag; the target goes to Home Assistant when you let go (the keys after 600 ms). |
 | AV wall panel controls | 0.1.1 | Five tiles of keys: transport, D-pad, volume or channel, a number pad and a selector grid. Each key runs the action typed for it in the editor, such as `remote.send_command command=UP`. |
 | Bluetooth proxy | 0.2.0 | ESPHome's Bluetooth proxy on the tablet; see **The Bluetooth proxy**. Only on a tablet with Bluetooth LE (Android 4.3 and later). |
+| Screen camera | 0.7.3 | The tablet's camera as a camera in Home Assistant, with **Light level** and **Motion**, and with its part **Video** live video with sound; see **Screen camera**. Only on a tablet with a camera. |
 | Voice assistant | 0.4.0 | Home Assistant's Assist on the tablet: the **Assistant** tile, its top bar item, the popup, and the wake word heard on the tablet itself. Only on a tablet with a microphone; see **The voice assistant**. |
 
 A plugin's tiles use the tablet's permission to perform Home Assistant actions, as every control does.
@@ -254,17 +256,41 @@ who calls, with Answer and Decline. In a call:
 - **Mute** turns your microphone off and on, and **Hang up** ends the call.
 - Two small keys at the top right are voice switching (one person speaks at a time, so the voice doesn't echo back) and
   echo cancelling. Either one changes it for both screens.
-- When the other screen has a camera (Tessera's Screen camera plugin with Video), its picture shows beside the keys. The
-  tablet doesn't send its own camera yet.
+- **Video calls.** When both screens have a camera with video (Tessera's Screen camera plugin with its part Video; on a
+  tablet, see **Screen camera**), the call has pictures both ways: the other's beside the keys, and this tablet's
+  camera to the other screen (the add-on reads it from the tablet's video, as it reads a Tessera screen's). The cameras
+  start while it rings, so the picture is there at the answer, and the green dot shows meanwhile. **Camera** turns
+  this tablet's camera off and on for the other side; when the other side turns theirs off, its name shows with
+  *camera off*. The list of screens offers video where both ends can, sound only elsewhere.
 
 The screen's switches **Call ringtone** (off: a call lights the screen up without a sound), **Call voice switching** and
 **Do not disturb** (calls to it are refused, and the list says so) are on its settings page and in Home Assistant. Home
 Assistant gets the add-on's events `esp_screens_call_started`, `_answered`, `_missed` and `_ended`.
 
-The microphone is open only while Talk or a call is on, a question to the voice assistant listens, or the wake word is
-on (see **The voice assistant**). For Talk and calls, Android's own echo canceller and noise suppressor are used where
+The microphone is open only while Talk or a call is on, a question to the voice assistant listens, the wake word is
+on (see **The voice assistant**), or someone watches the camera's video with its sound. For Talk and calls, Android's own echo canceller and noise suppressor are used where
 the tablet has them, and the tablet tells Tessera whether it has a microphone and an echo canceller. A call or Talk takes
 the microphone from the wake word and gives it back when it ends.
+
+## The sounds you choose
+
+Tessera's **Events** page (add-on 0.4.100 and later) chooses the sounds a screen with a speaker plays, and the tablets
+play them too:
+
+- **Calls**: the ringtone, played back to back while a call rings, on Android's ring volume. **Call ringtone** off on the
+  tablet still rings silently.
+- **Doorbell**: the chime, once per ring, on the notification volume.
+- **Alerts**: a sound when an alert comes up, on the notification volume. Alerts stay silent until you choose one.
+
+Each can be one of Tessera's six sounds, one you cut in its audio editor, or **No sound**, for every screen or per screen,
+and the **Test** key there plays it on the tablet. The **Volume** slider sets how loud the sound is in the file itself;
+Tessera starts the ringtone and the alert's sound at -20 dB because its own small speakers distort above that. A tablet's
+speaker usually doesn't, so if a ringtone is too quiet on the tablets, raise its Volume in Tessera (or the tablet's ring
+volume).
+
+The tablet downloads a sound the first time it is named and keeps it, so it plays at once after that, also after a
+restart. If a sound isn't there within 1.5 seconds, a ring and a chime play the tablet's own sound instead, and an alert
+shows without one, as on a Tessera screen.
 
 ## The voice assistant
 
@@ -305,9 +331,10 @@ phrase at a time, so leave **Wake word 2** on *No wake word*.
 - **It is off at first.** Tessera's plugin starts with it on; here you switch it on per tablet, so an update never
   leaves every tablet listening.
 - **When it listens:** while Wake word is on, Home Assistant is connected, and the tiles are on the glass, also dimmed
-  in Tessera's standby or under its screensaver. It rests while another app or Android's screensaver is in front, while
-  Android has turned the screen off (with **Use Android screensaver**), and while a call or the doorbell's Talk has the
-  microphone.
+  in Tessera's standby, under its screensaver, or under Android's screensaver (**Use Android screensaver**). A phrase
+  heard under Android's screensaver ends it, on a rooted tablet (Android lets only a key press end its screensaver;
+  without root the question still runs, with the screensaver up). It rests while another app is in front, while
+  Android has turned the screen off, and while a call or the doorbell's Talk has the microphone.
 - **How much it costs:** about 150 KB in the app and a little processor time, all the time it listens. The log says how
   much once, a minute after it starts listening (*wake: hearing takes 2.0% of one core*). On a slow old tablet, if that
   is too much, leave Wake word off there; a tap still asks.
@@ -323,8 +350,13 @@ tablet holds the microphone the whole time, so on Android 9 and older:
   video call app. They fail to start or record silence;
 - **the wake word gives way inside Tile Screen**: calls and the doorbell's Talk take the microphone from it and give it
   back when they end, and a question uses the wake word's own recording;
-- **another app in front gets it**: the wake word rests whenever another app (or Android's screensaver) is in front, so
-  an app you open on the tablet can record. It listens again when the tiles come back.
+- **the camera's video shares it**: while someone watches the video (Screen camera), its sound comes from the wake
+  word's recording when that runs. When it doesn't (Wake word off), the video records itself and the wake word waits
+  until nobody watches; a question you start by tap uses the video's recording. Calls and Talk take the microphone
+  from the video too, and its sound has a gap until they end;
+- **another app in front gets it**: the wake word rests whenever another app is in front, so an app you open on the
+  tablet can record. It listens again when the tiles come back. Android's screensaver doesn't count: the wake word
+  listens on under it.
 
 On Android 10 and later two apps can record at once and Android gives the sound to the one in front: while the tiles
 are on the glass, an app recording in the background gets silence.
@@ -363,6 +395,70 @@ lock, a light), with pairing.
   Bermuda, at the cost of Wi-Fi and some processor) or **Low power** (a tenth). Android 4.3 and 4.4 have one speed only.
 - **Wi-Fi:** many tablets use one chip for Wi-Fi and Bluetooth. If camera streams stutter, choose Low power or turn the
   proxy off on that tablet.
+
+## Screen camera
+
+On a tablet with a camera, Tile Screen is a camera of its own device in Home Assistant, as Tessera's **Screen camera**
+plugin makes an ESP32-P4 screen one: a picture on a dashboard (a Picture entity or Picture glance card), a stream when
+you open it, and anything Home Assistant does with a camera (a snapshot in an automation, a recording).
+
+- **Set up:** in Tessera's **Plugins** page choose **Screen camera** and tick the tablet. Nothing is built; the camera
+  is there as **Camera** on the tablet's device in Home Assistant whether or not you add the plugin. For live video,
+  keep the plugin's part **Video** ticked (see **Video** below).
+- **Which camera:** the front one, looking into the room. On a tablet with a camera on each side, **Camera side** (the
+  settings page and Home Assistant; Tile Screen's own, not Tessera's) chooses the back one instead.
+- **It stands upright by itself**, however the tablet hangs; on a tablet mounted the other way round, switch on
+  **Camera upside down**. The picture isn't mirrored: Home Assistant sees the room as a camera on the wall would.
+- **Camera field of view:** **Full** (to start) is everything the camera sees; **Sharp** is the middle of it, half as
+  wide and high, at the camera's own resolution, so a face across the room shows more detail.
+- **The camera runs only while it's used:** while Home Assistant asks for pictures (a dashboard asks every ten seconds;
+  the camera stays on twelve seconds after a picture, so it doesn't start and stop between them) and while **Light
+  level and motion** is on. Pictures come from the camera's preview, at up to 1280 x 720 and five a second: no shutter
+  sound, and nothing is kept on the tablet.
+- **The dot:** a small green dot in the top right corner, over everything, shows while the camera is in use: solid while
+  Home Assistant watches, a ring while the camera only senses. No setting hides it. (Android 12 and later show their
+  own green dot in the corner too.)
+- **Your own camera on a tile:** a camera tile of the tablet's own **Video** camera, set to Live, shows the camera
+  straight from the tablet (Tessera's own camera tiles): no stream through the add-on, five pictures a second, the
+  dot solid while it shows. A mirror by the door, or a check that the camera sees what it should.
+- **Light level and motion** (off to start; **Camera light level and motion** on the settings page or in Home
+  Assistant; off, Light level reads unknown and Motion off): **Motion** turns on when part of the picture changes and stays on for **Camera motion timeout** after
+  the last movement (10 seconds to start, 5 seconds to 10 minutes). A light switched on or off isn't motion: motion
+  isn't judged for three seconds after it. **Light level** updates every ten seconds, and at once when a light goes on
+  or off. On a tablet with a light sensor it is that sensor's reading in real lux (the log's first *camera:* line says
+  which the tablet uses). On
+  one without, it's worked out from the picture's brightness, a rough guess: the camera's automatic exposure evens much
+  of the room's light out, so it tells dark from light but little between. Pick automation thresholds by watching what
+  it reads in your room. No picture leaves the tablet for these, only the two values.
+- **Camera motion wakes the screen** (off to start): someone moving in front of the tablet wakes it from standby and
+  keeps it awake, as a touch does. It turns Light level and motion on with it; turning that off turns this off too, as
+  in Tessera. With **Use Android screensaver** it wakes a tablet whose screen is off or under Android's screensaver,
+  and never pulls the app in front of another one.
+- **Privacy:** pictures go only to Home Assistant, and only while it asks. Everyone who can open the tablet's device
+  or a dashboard with its camera can see through it. To stop that for a while, disable the Camera entity in Home
+  Assistant; to stop it for good, turn the app's Camera permission off in Android's settings (Android 6 and later).
+- **Video:** with the plugin's part **Video** (on when you add the plugin; the plugin's details on the tablet's Plugins
+  tab in Tessera), the tablet is live video with sound in Home Assistant, as Tessera's screens are. Once for your whole
+  home, open **Settings, Video in Home Assistant** in Tessera, press **Install in Home Assistant**, then **Restart Home
+  Assistant**. Tessera then adds a camera **Video** to the tablet's device by itself, and nobody types a password: both
+  sides work it out from the tablet's encryption key. It plays in Home Assistant's browser page and app like any camera
+  (through go2rtc, as WebRTC), and gives stills too.
+  - What travels: H.264 from the tablet's own video encoder at 15 frames a second, a key frame every second, about a
+    megabit a second at 1280 x 720; RTSP on port 8554. **Camera field of view** and **Camera upside down** apply to it
+    too, and a tablet standing up gives an upright video.
+  - The sound is the microphone as G.711 (telephone quality, 8 kHz), not Tessera's Opus, which Android can make only
+    from version 10. go2rtc passes it to the browser as it is. Home Assistant's own stream (its HLS fallback and
+    recordings) leaves this sound out; the live view through go2rtc has it.
+  - The camera, its encoder and the microphone run only while someone watches (and the dot is solid then); see
+    **Sharing the microphone** for how the video shares the microphone with the wake word.
+  - Unlike a Tessera screen, the tablet keeps its **Camera** beside **Video**: Tile Screen can't tell whether the part
+    is ticked. Use either.
+  - The video needs the tablet's encryption key, which Home Assistant sets when you add the tablet: without one it
+    serves nothing.
+  - Encoding takes a fair share of an old tablet's processor. The log says once a minute how it keeps up (*video:* …
+    fps).
+- **Another app with the camera:** Android lets one app use a camera at a time. If another app has it, the log says
+  *camera: couldn't start* and the tablet tries again every ten seconds.
 
 ## Live cameras
 
@@ -522,6 +618,10 @@ on a desktop JVM against the real clients:
 - `test/alarm_test.py`, `test/call_test.py` and `test/assist_test.py` drive the alarm keypad, calls between screens and
   the voice assistant with the add-on's code and `aioesphomeapi`.
 - `test/doorbell_sound_test.py` rings with a stream of pictures and sound and drives the Sound key.
+- `test/RtspMain.java` serves an H.264 file and a tone through the video's server, for `ffmpeg` and `go2rtc` (as Home
+  Assistant plays it) to play: both tracks, the password, a still.
+- `test/camera_test.py` drives Screen camera as Home Assistant does (the entities, a picture, a stream, the settings),
+  against a stand-in camera in `RenderMain`; `test/SensingMain.java` runs motion and light level on made-up frames.
 - `test/ble_test.py` drives the Bluetooth proxy as Home Assistant does (`aioesphomeapi`'s Bluetooth calls), against a
   stand-in radio in `RenderMain`.
 - `test/wake_test.py` drives the wake word end to end (Home Assistant's wake word choice, Wake word and Wake phrase, a

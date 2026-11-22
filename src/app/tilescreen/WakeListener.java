@@ -15,7 +15,8 @@ import app.tilescreen.core.WakeWord;
  * again once they are done.
  *
  * Android before 10 gives the microphone to one recording at a time: while this listens, other apps (another voice
- * assistant, a recorder) can't record. It rests while another app or Android's screensaver is in front, so they can.
+ * assistant, a recorder) can't record. It rests while another app is in front, so they can; Android's screensaver isn't
+ * one (App tells it apart: ACTION_DREAMING_STARTED), and a phrase heard under it wakes the screen.
  */
 final class WakeListener {
     private final App app;
@@ -25,9 +26,12 @@ final class WakeListener {
     private final WakeWord word;
     private final Object lock = new Object();
 
-    private volatile boolean visible = true, live, closed;
+    private volatile boolean visible = true, dreaming, live, closed;
+    private volatile long hiddenAt;
     private volatile int taken;
     private volatile Assist.Sink sink;
+    /** The video's sound, riding on this recording while it runs (VideoSound). */
+    volatile Assist.Sink tap;
     private volatile boolean changed;
     private Thread worker;
     /** How much of a core hearing takes, measured once over the first minute of listening. */
@@ -74,7 +78,16 @@ final class WakeListener {
         synchronized (lock) { lock.notifyAll(); }
     }
 
+    /** Android's screensaver (a dream) is up or gone: under it the wake word listens on. */
+    void dreaming(boolean on) {
+        dreaming = on;
+        update();
+    }
+
     void visible(boolean on) {
+        // Android stops the app a moment before it says its screensaver started: a second and a half of grace, so the
+        // recording doesn't close and open again in between.
+        if (!on) hiddenAt = SystemClock.uptimeMillis();
         visible = on;
         update();
     }
@@ -87,6 +100,9 @@ final class WakeListener {
     }
 
     void detach() { sink = null; }
+
+    /** Whether the recording runs now (a tap hears it). */
+    boolean live() { return live; }
 
     /**
      * A call or Talk takes the microphone (`on`), or gives it back. Taking waits, up to two seconds, until the wake
@@ -105,7 +121,7 @@ final class WakeListener {
     }
 
     private boolean wanted() {
-        return !closed && settings.assistWakeWord() && visible && taken == 0 && device.voiceReady()
+        return !closed && settings.assistWakeWord() && (visible || dreaming || SystemClock.uptimeMillis() - hiddenAt < 1500) && taken == 0 && device.voiceReady()
                 // a question that opened the microphone itself (Wake word was off) keeps it until it is done
                 && (live || !assist.busy());
     }
@@ -175,6 +191,8 @@ final class WakeListener {
                 failures = 0;
                 Assist.Sink s = sink;
                 if (s != null) s.part(part.clone());
+                Assist.Sink t = tap;
+                if (t != null) t.part(part);
                 long t0 = System.nanoTime();
                 String heard = word.hear(part, part.length);
                 measure(System.nanoTime() - t0);
@@ -223,7 +241,7 @@ final class WakeListener {
     private String reason() {
         if (!settings.assistWakeWord()) return "Wake word is off";
         if (taken > 0) return "a call or Talk has the microphone";
-        if (!visible) return "another app or Android's screensaver is in front";
+        if (!visible) return "another app is in front";
         return "Home Assistant isn't connected";
     }
 

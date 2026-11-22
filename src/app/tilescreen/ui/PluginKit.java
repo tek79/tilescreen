@@ -194,6 +194,8 @@ final class PluginKit {
             all.add(new VoiceAssistPlugin());
             // Bluetooth proxy (bt_proxy 0.2.0): no tiles, the proxy itself (core/BleProxy) on a tablet with Bluetooth LE.
             all.add(new Plugin("bt_proxy", "0.2.0") {});
+            // Screen camera (screen_camera 0.7.3): no tiles, the tablet's camera (ScreenCamera) as the device's Camera.
+            all.add(new Plugin("screen_camera", "0.7.3") {});
             List<Map<String, Object>> hello = new ArrayList<Map<String, Object>>();
             for (Plugin p : all) hello.add(p.hello());
             Tessera.plugins = hello;

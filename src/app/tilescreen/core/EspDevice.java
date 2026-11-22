@@ -38,6 +38,8 @@ public final class EspDevice {
             LIST_SELECT = 52, SELECT_STATE = 53, SELECT_CMD = 54, LIST_BUTTON = 61, BUTTON_CMD = 62,
             LIST_TIME = 103, TIME_STATE = 104, TIME_CMD = 105,
             LIST_MEDIA_PLAYER = 63, MEDIA_PLAYER_STATE = 64, MEDIA_PLAYER_CMD = 65,
+            LIST_BINARY_SENSOR = 12, BINARY_SENSOR_STATE = 21,
+            LIST_CAMERA = 43, CAMERA_IMAGE = 44, CAMERA_IMAGE_REQ = 45,
             // ESPHome's voice assistant (api.proto): Home Assistant's Assist pipeline with this screen as its satellite.
             VA_SUBSCRIBE = 89, VA_REQUEST = 90, VA_RESPONSE = 91, VA_EVENT = 92, VA_AUDIO = 106,
             VA_ANNOUNCE = 119, VA_ANNOUNCE_FINISHED = 120, VA_CONFIG_REQ = 121, VA_CONFIG_RESP = 122, VA_SET_CONFIG = 123;
@@ -186,6 +188,13 @@ public final class EspDevice {
             publish();
         }
 
+        /** No value: Home Assistant shows the sensor as unknown. */
+        public void clear() {
+            if (!known) return;
+            known = false;
+            publish();
+        }
+
         int listType() { return LIST_SENSOR; }
 
         Pb.Out describe() {
@@ -262,6 +271,62 @@ public final class EspDevice {
             Pb.Field s = Pb.first(f, 2);
             boolean v = s != null && s.varint != 0;
             if (onSet != null) onSet.set(v); else set(v);
+        }
+    }
+
+    /** An on/off sensor (ListEntitiesBinarySensorResponse, BinarySensorStateResponse): Motion. */
+    public static final class BinarySensor extends Entity {
+        public String deviceClass = "";
+        private volatile boolean value, known;
+
+        public BinarySensor(String objectId, String name) { super(objectId, name); }
+
+        public void set(boolean v) {
+            if (known && v == value) return;
+            value = v;
+            known = true;
+            publish();
+        }
+
+        public boolean get() { return value; }
+
+        int listType() { return LIST_BINARY_SENSOR; }
+
+        Pb.Out describe() {
+            return new Pb.Out().string(1, objectId).key(2, key()).string(3, name).string(5, deviceClass)
+                    .string(8, icon).varint(9, category);
+        }
+
+        int stateType() { return BINARY_SENSOR_STATE; }
+
+        Pb.Out state() { return new Pb.Out().key(1, key()).bool(2, value).bool(3, !known); }
+    }
+
+    /**
+     * ESPHome's camera (ListEntitiesCameraResponse, CameraImageRequest, CameraImageResponse): Home Assistant asks for one
+     * picture or for a stream (it asks again for every picture of a stream), and gets a JPEG in pieces, the last marked done.
+     */
+    public static final class Camera extends Entity {
+        /** Home Assistant wants a picture: the source makes one and hands it to {@link #picture}. */
+        public interface Source { void wanted(boolean stream); }
+        public volatile Source source;
+
+        public Camera(String objectId, String name) { super(objectId, name); }
+
+        int listType() { return LIST_CAMERA; }
+
+        Pb.Out describe() {
+            return new Pb.Out().string(1, objectId).key(2, key()).string(3, name).string(6, icon).varint(7, category);
+        }
+
+        int stateType() { return 0; }
+
+        Pb.Out state() { return null; }
+
+        /** A picture for every connection waiting for one. */
+        public void picture(byte[] jpeg) {
+            EspDevice d = owner;
+            if (d != null && jpeg != null) d.cameraPicture(this, jpeg);
         }
     }
 
@@ -677,6 +742,47 @@ public final class EspDevice {
         }
     }
 
+    /** How long a stream request keeps pictures coming (ESPHome's camera: about five seconds). */
+    static final long STREAM_MS = 5000;
+    static final int PICTURE_CHUNK = 16 * 1024;
+
+    void cameraPicture(Camera cam, byte[] jpeg) {
+        long now = System.currentTimeMillis();
+        for (final Conn c : conns) {
+            if (!c.pictureWanted && now > c.streamUntil) continue;
+            if (c.pictureBusy) continue; // the last one is still going out: this connection skips a picture
+            c.pictureWanted = false;
+            c.pictureBusy = true;
+            final int key = cam.key();
+            final byte[] data = jpeg;
+            try {
+                writer.execute(new Runnable() {
+                    public void run() {
+                        try {
+                            for (int at = 0; at < data.length || at == 0; at += PICTURE_CHUNK) {
+                                int end = Math.min(data.length, at + PICTURE_CHUNK);
+                                c.send(CAMERA_IMAGE, new Pb.Out().key(1, key)
+                                        .bytes(2, java.util.Arrays.copyOfRange(data, at, end)).bool(3, end >= data.length));
+                                if (end >= data.length) break;
+                            }
+                        } finally {
+                            c.pictureBusy = false;
+                        }
+                    }
+                });
+            } catch (RuntimeException e) {
+                c.pictureBusy = false;
+            }
+        }
+    }
+
+    /** Whether a connection waits for a picture or streams. */
+    public boolean pictureWanted() {
+        long now = System.currentTimeMillis();
+        for (Conn c : conns) if (c.pictureWanted || now <= c.streamUntil) return true;
+        return false;
+    }
+
     private void later(final Conn c, final int type, final Pb.Out m) {
         try {
             writer.execute(new Runnable() {
@@ -753,6 +859,9 @@ public final class EspDevice {
         final InputStream in;
         final OutputStream out;
         volatile boolean ready, statesSubscribed, servicesSubscribed;
+        /** The camera: a picture asked for, a stream's end, and a picture still going out. */
+        volatile boolean pictureWanted, pictureBusy;
+        volatile long streamUntil;
         volatile Noise noise;
         final String peer;
         /** Messages from other threads (the Bluetooth proxy's) go out on the writer, in order. */
@@ -940,6 +1049,19 @@ public final class EspDevice {
                         for (Entity e : entities) if (e.key() == (int) k.varint) target = e;
                     }
                     if (target != null) target.command(f);
+                    return true;
+                }
+                case CAMERA_IMAGE_REQ: {
+                    Pb.Field single = Pb.first(f, 1), stream = Pb.first(f, 2);
+                    boolean streaming = stream != null && stream.varint != 0;
+                    if (streaming) streamUntil = System.currentTimeMillis() + STREAM_MS;
+                    if (single != null && single.varint != 0) pictureWanted = true;
+                    Camera cam = null;
+                    synchronized (EspDevice.this) {
+                        for (Entity e : entities) if (e instanceof Camera) cam = (Camera) e;
+                    }
+                    Camera.Source src = cam == null ? null : cam.source;
+                    if (src != null && (pictureWanted || streaming)) src.wanted(streaming);
                     return true;
                 }
                 case EXECUTE_SERVICE:

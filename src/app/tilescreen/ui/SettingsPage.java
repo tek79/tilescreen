@@ -172,6 +172,24 @@ final class SettingsPage {
                 out.add(scan);
                 out.add(info("Bluetooth status", App.get().screen().screenSettings.bluetoothStatusText()));
             }
+            // Screen camera's (screen_camera), where the tablet has a camera.
+            app.tilescreen.core.ScreenSettings ss = App.get().screen().screenSettings;
+            if (ss.hasCamera()) {
+                out.add(row(TOGGLE, "Camera light level and motion", "camera_light_level_and_motion"));
+                out.add(row(TOGGLE, "Camera motion wakes the screen", "camera_motion_wakes_the_screen"));
+                Row timeout = number("Camera motion timeout", "camera_motion_timeout", 5, 600, 5, " s");
+                timeout.enabled = s.get("camera_light_level_and_motion") != 0;
+                out.add(timeout);
+                out.add(row(TOGGLE, "Camera upside down", "camera_upside_down"));
+                Row field = row(CHOICE, "Camera field of view", "camera_field_of_view");
+                field.options = app.tilescreen.core.ScreenSettings.FIELDS;
+                out.add(field);
+                if (ss.hasCameraSides()) {
+                    Row side = row(CHOICE, "Camera side", "camera_side");
+                    side.options = app.tilescreen.core.ScreenSettings.SIDES;
+                    out.add(side);
+                }
+            }
             out.add(number("Waste days ahead", "waste_days_ahead", 0, 3, 1, ""));
             out.add(row(ROTATION, "Rotation", "rotation"));
         } else if (g.equals(ABOUT)) {

@@ -51,6 +51,15 @@ public final class ScreenSettings {
     /** The app's own: how much of the time the proxy listens (Low power, Balanced, Fast: Android's scan modes). */
     private int bluetoothScan = 1;
     public static final String[] SCAN_MODES = {"Low power", "Balanced", "Fast"};
+    /**
+     * Tessera's screen_camera settings: light level and motion, motion waking the screen (both off to start), how long
+     * Motion stays on (seconds), the picture turned half way, and the field of view (Sharp, Full: Full to start).
+     */
+    private int cameraSensing = 0, cameraWake = 0, cameraTimeout = 10, cameraUpsideDown = 0, cameraField = 1;
+    public static final String[] FIELDS = {"Sharp", "Full"};
+    /** The app's own: which of a tablet's cameras, the front one (looking into the room) to start. */
+    private int cameraSide = 0;
+    public static final String[] SIDES = {"Front", "Back"};
     // This app's own, not Tessera's: Android's screen timeout and screensaver instead of Tessera's standby.
     private int androidSaver = 0;
     /** The app's own too: a tile's icon toggles it and a tap anywhere else opens its card. */
@@ -214,6 +223,76 @@ public final class ScreenSettings {
         return t == null ? "" : t.get();
     }
 
+    private EspDevice.Switch eCameraSensing, eCameraWake, eCameraUpsideDown;
+    private EspDevice.Number eCameraTimeout;
+    private EspDevice.Select eCameraField, eCameraSide;
+    /** A camera setting changed (the camera starts, stops or turns). */
+    public volatile Runnable onCamera;
+
+    /**
+     * Screen camera's settings (Tessera's screen_camera plugin, named as its plugin.yaml names them): only on a tablet
+     * with a camera.
+     */
+    public void cameraToggles(EspDevice d, boolean bothSides) {
+        if (eCameraSensing != null) return;
+        eCameraSensing = toggle(d, "camera_light_level_and_motion", "Camera light level and motion", "mdi:motion-sensor",
+                "camera_light_level_and_motion");
+        eCameraWake = toggle(d, "camera_motion_wakes_the_screen", "Camera motion wakes the screen", "mdi:motion-sensor",
+                "camera_motion_wakes_the_screen");
+        eCameraUpsideDown = toggle(d, "camera_upside_down", "Camera upside down", "mdi:camera-flip", "camera_upside_down");
+        eCameraField = new EspDevice.Select("camera_field_of_view", "Camera field of view", FIELDS);
+        eCameraField.icon = "mdi:fit-to-screen-outline";
+        eCameraField.category = EspDevice.CATEGORY_CONFIG;
+        eCameraField.onSet = new EspDevice.Select.OnSet() {
+            public void set(String option) {
+                int i = java.util.Arrays.asList(FIELDS).indexOf(option);
+                if (i >= 0) ScreenSettings.this.set("camera_field_of_view", i);
+                else publish();
+            }
+        };
+        d.add(eCameraField);
+        if (bothSides) {
+            // Not one of Tessera's settings: a tablet has a camera on each side, a Tessera screen one.
+            eCameraSide = new EspDevice.Select("camera_side", "Camera side", SIDES);
+            eCameraSide.icon = "mdi:camera-switch";
+            eCameraSide.category = EspDevice.CATEGORY_CONFIG;
+            eCameraSide.onSet = new EspDevice.Select.OnSet() {
+                public void set(String option) {
+                    int i = java.util.Arrays.asList(SIDES).indexOf(option);
+                    if (i >= 0) ScreenSettings.this.set("camera_side", i);
+                    else publish();
+                }
+            };
+            d.add(eCameraSide);
+        }
+        eCameraTimeout = number(d, "camera_motion_timeout", "Camera motion timeout", 5, 600, 5, "s", "mdi:timer-outline",
+                "camera_motion_timeout", 0);
+        publish();
+    }
+
+    public boolean hasCamera() { return eCameraSensing != null; }
+    public synchronized boolean cameraSensing() { return cameraSensing != 0; }
+    public synchronized boolean cameraWake() { return cameraWake != 0; }
+    public synchronized int cameraTimeout() { return cameraTimeout; }
+    public synchronized boolean cameraUpsideDown() { return cameraUpsideDown != 0; }
+    /** Sharp (0): the middle of the picture; Full (1): all of it. */
+    public synchronized int cameraField() { return cameraField; }
+    /** Front (0) or Back (1). */
+    public synchronized int cameraSide() { return cameraSide; }
+    public boolean hasCameraSides() { return eCameraSide != null; }
+
+    private void publishCamera() {
+        if (eCameraSensing == null) return;
+        int se, wk, to, up, fv, sd;
+        synchronized (this) { se = cameraSensing; wk = cameraWake; to = cameraTimeout; up = cameraUpsideDown; fv = cameraField; sd = cameraSide; }
+        if (eCameraSide != null) eCameraSide.set(SIDES[sd]);
+        eCameraSensing.set(se != 0);
+        eCameraWake.set(wk != 0);
+        eCameraTimeout.set(to);
+        eCameraUpsideDown.set(up != 0);
+        eCameraField.set(FIELDS[fv]);
+    }
+
     private EspDevice.Switch eWakeWord, eWakeSound, eThinkingSound, eShowPopup;
     private EspDevice.Select eWakePhrase;
     /** The wake word or its phrase changed (the app starts or stops listening). */
@@ -314,6 +393,10 @@ public final class ScreenSettings {
             Runnable b = onBluetooth;
             if (b != null) b.run();
         }
+        if (key.startsWith("camera_")) {
+            Runnable c = onCamera;
+            if (c != null) c.run();
+        }
         if (key.equals("assist_wake_word") || key.equals("assist_wake_phrase")) {
             Runnable w = onWake;
             if (w != null) w.run();
@@ -357,6 +440,16 @@ public final class ScreenSettings {
         else if (key.equals("assist_wake_phrase")) assistWakePhrase = clamp(value, 0, WakeWord.PHRASES.length - 1);
         else if (key.equals("bluetooth_proxy")) bluetoothProxy = flag(value);
         else if (key.equals("bluetooth_scan")) bluetoothScan = clamp(value, 0, SCAN_MODES.length - 1);
+        else if (key.equals("camera_light_level_and_motion")) {
+            cameraSensing = flag(value);
+            if (cameraSensing == 0) cameraWake = 0; // without sensing there is no motion to wake for
+        } else if (key.equals("camera_motion_wakes_the_screen")) {
+            cameraWake = flag(value);
+            if (cameraWake != 0) cameraSensing = 1; // motion is measured only while sensing is on
+        } else if (key.equals("camera_motion_timeout")) cameraTimeout = clamp((value + 2) / 5 * 5, 5, 600);
+        else if (key.equals("camera_upside_down")) cameraUpsideDown = flag(value);
+        else if (key.equals("camera_field_of_view")) cameraField = clamp(value, 0, FIELDS.length - 1);
+        else if (key.equals("camera_side")) cameraSide = clamp(value, 0, SIDES.length - 1);
         else if (key.equals("android_saver")) {
             androidSaver = flag(value);
             if (androidSaver != 0) { dimmed = false; sleepRequested = false; }
@@ -401,6 +494,12 @@ public final class ScreenSettings {
         m.put("assist_wake_phrase", (double) assistWakePhrase);
         m.put("bluetooth_proxy", (double) bluetoothProxy);
         m.put("bluetooth_scan", (double) bluetoothScan);
+        m.put("camera_light_level_and_motion", (double) cameraSensing);
+        m.put("camera_motion_wakes_the_screen", (double) cameraWake);
+        m.put("camera_motion_timeout", (double) cameraTimeout);
+        m.put("camera_upside_down", (double) cameraUpsideDown);
+        m.put("camera_field_of_view", (double) cameraField);
+        m.put("camera_side", (double) cameraSide);
         m.put("android_saver", (double) androidSaver);
         m.put("icon_toggles", (double) iconToggles);
         m.put("system_brightness", (double) systemBrightness);
@@ -462,6 +561,7 @@ public final class ScreenSettings {
             eBluetooth.set(bt != 0);
             eBluetoothScan.set(SCAN_MODES[bs]);
         }
+        publishCamera();
         eNightStart.set(nst);
         eNightEnd.set(nen);
         eRotation.set(rot + "°");
@@ -506,6 +606,12 @@ public final class ScreenSettings {
         if (key.equals("assist_wake_phrase")) return assistWakePhrase;
         if (key.equals("bluetooth_proxy")) return bluetoothProxy;
         if (key.equals("bluetooth_scan")) return bluetoothScan;
+        if (key.equals("camera_light_level_and_motion")) return cameraSensing;
+        if (key.equals("camera_motion_wakes_the_screen")) return cameraWake;
+        if (key.equals("camera_motion_timeout")) return cameraTimeout;
+        if (key.equals("camera_upside_down")) return cameraUpsideDown;
+        if (key.equals("camera_field_of_view")) return cameraField;
+        if (key.equals("camera_side")) return cameraSide;
         if (key.equals("android_saver")) return androidSaver;
         if (key.equals("icon_toggles")) return iconToggles;
         if (key.equals("system_brightness")) return systemBrightness;
@@ -613,12 +719,14 @@ public final class ScreenSettings {
         synchronized (this) {
             touchDown = down;
             lastTouch = lastUse = System.currentTimeMillis();
+            // The light comes up as the finger lands, not when it lifts (Tessera 0.4.100: the screensaver goes on the
+            // touch down); the rest of that touch acts on nothing (MainActivity swallows it).
             if (dimmed) {
                 woke = true;
-                if (!down) wakeLocked();
+                wakeLocked();
             }
         }
-        if (woke && !down) apply();
+        if (woke) apply();
         return woke;
     }
 

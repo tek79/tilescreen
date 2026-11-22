@@ -15,7 +15,7 @@ import app.tilescreen.core.Tessera;
  * Pictures Tessera prepares for this screen (pkg/tessera/widgets/photo.go): ask for one, wait for the link the add-on
  * answers with, fetch it, and fetch it again as often as the picture changes. One slot per kind.
  */
-final class Pictures {
+public final class Pictures {
     /** host:port of a link, for messages. */
     private static final class URL0 {
         final String u;
@@ -31,6 +31,20 @@ final class Pictures {
     }
 
     interface Redraw { void redraw(); }
+
+    /**
+     * The tablet's own camera on a live tile of its own (Tessera's own_camera, plugin API 0.22): the add-on answers such
+     * a tile "own:" and the tablet draws it from its camera itself, no link and no stream.
+     */
+    public interface Own {
+        /**
+         * The newest picture for a tile `w` x `h` (its corners rounded by `radius` on `ground`), the whole frame inside it
+         * (`contain`) or filling it; null before the first. Asking keeps the camera on for the tile.
+         */
+        Bitmap frame(int w, int h, int radius, int ground, boolean contain);
+    }
+
+    public static volatile Own own;
 
     /** A link that does not come is asked for again after this, as camera_view::ASK_AGAIN_MS. */
     private static final long PATIENT = 10000;
@@ -54,6 +68,23 @@ final class Pictures {
         volatile int pps = 5;
         /** A live link that ended: never pulled again, the next picture comes from a new question. */
         volatile String deadUrl;
+        /** The tile's size, corners and ground, for a picture of the tablet's own camera. */
+        int ownW, ownH, ownRadius, ownGround;
+    }
+
+    /** What a tile of this kind looks like, in case its answer is the tablet's own camera. */
+    synchronized void shape(String kind, int w, int h, int radius, int ground) {
+        Slot s = slot(kind);
+        s.ownW = w;
+        s.ownH = h;
+        s.ownRadius = radius;
+        s.ownGround = ground;
+    }
+
+    /** Whether a kind shows the tablet's own camera now (it redraws often then). */
+    synchronized boolean showsOwn(String kind) {
+        Slot s = slots.get(kind);
+        return s != null && s.url != null && s.url.startsWith("own:");
     }
 
     private final Map<String, Slot> slots = new HashMap<String, Slot>();
@@ -119,6 +150,12 @@ final class Pictures {
                 s.fails = 0;
                 s.liveUrl = null;
                 askNow = true;
+            } else if (ready && p.url.startsWith("own:")) {
+                // The tablet's own camera: its newest picture, drawn here from the camera.
+                Own o = own;
+                s.url = p.url;
+                Bitmap b = o == null ? null : o.frame(s.ownW, s.ownH, s.ownRadius, s.ownGround, p.url.contains("fit=contain"));
+                if (b != null) s.img = b;
             } else if (ready && p.url.endsWith(".mjpeg")) {
                 // A live stream: one puller for it, which asks for each next picture while the slot is wanted.
                 if (!p.url.equals(s.liveUrl)) {
@@ -167,7 +204,7 @@ final class Pictures {
                         int code = c.getResponseCode();
                         if (code == 200) {
                             InputStream in = c.getInputStream();
-                            Bitmap got = BitmapFactory.decodeStream(in);
+                            Bitmap got = decode(in);
                             in.close();
                             if (got != null && streamUrl.equals(s.liveUrl)) {
                                 synchronized (Pictures.this) {
@@ -248,7 +285,7 @@ final class Pictures {
                     at += n;
                 }
                 if (at < length) break;
-                Bitmap got = BitmapFactory.decodeByteArray(jpeg, 0, length);
+                Bitmap got = decode(jpeg, length);
                 if (got != null) {
                     synchronized (this) {
                         s.img = got;
@@ -262,6 +299,32 @@ final class Pictures {
         } catch (Exception e) {
             app.tilescreen.App.get().log("live: stream " + streamUrl + ": " + e);
         }
+    }
+
+    /**
+     * A picture from the add-on as it is meant to be shown. Since 0.4.99 (picture_paint.encode) a JPEG is made a multiple of
+     * 16 pixels each way for the P4's decoder, its last column and row carried on, and its own size goes along in an APP15
+     * segment ("TSSR", width and height big-endian): drawn whole, the extra strip stood past a tile's right edge. The
+     * picture is cut back to that size here.
+     */
+    public static Bitmap decode(byte[] body, int length) {
+        Bitmap b = BitmapFactory.decodeByteArray(body, 0, length);
+        if (b == null || length < 14) return b;
+        if ((body[0] & 0xFF) != 0xFF || (body[1] & 0xFF) != 0xD8 || (body[2] & 0xFF) != 0xFF || (body[3] & 0xFF) != 0xEF
+                || body[6] != 'T' || body[7] != 'S' || body[8] != 'S' || body[9] != 'R') return b;
+        int w = ((body[10] & 0xFF) << 8) | (body[11] & 0xFF), h = ((body[12] & 0xFF) << 8) | (body[13] & 0xFF);
+        if (w <= 0 || h <= 0 || (w >= b.getWidth() && h >= b.getHeight())) return b;
+        Bitmap cut = Bitmap.createBitmap(b, 0, 0, Math.min(w, b.getWidth()), Math.min(h, b.getHeight()));
+        if (cut != b) b.recycle();
+        return cut;
+    }
+
+    static Bitmap decode(InputStream in) throws java.io.IOException {
+        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+        byte[] buf = new byte[16384];
+        for (int n; (n = in.read(buf)) > 0; ) out.write(buf, 0, n);
+        byte[] body = out.toByteArray();
+        return decode(body, body.length);
     }
 
     private static String readLine(InputStream in) throws java.io.IOException {
@@ -286,7 +349,7 @@ final class Pictures {
                     int code = c.getResponseCode();
                     if (code == 200) {
                         InputStream in = c.getInputStream();
-                        got = BitmapFactory.decodeStream(in);
+                        got = decode(in);
                         in.close();
                         if (got == null) why = "the picture could not be decoded";
                     } else {

@@ -499,7 +499,7 @@ public final class TileView extends View {
         float radius = 2.4f * u;
         final Tessera tessera = screen.tessera;
         Map<Integer, Bitmap> now = new HashMap<Integer, Bitmap>();
-        boolean waiting = false;
+        boolean waiting = false, own = false;
         // The first camera tiles set to Live stream, as many as this tablet streams at once (caps.live_tiles); the rest
         // keep a still that comes again at their pace, as a Tessera screen's do (picture_engine::limits().streams).
         int streams = 0, most = Tessera.liveTiles;
@@ -521,6 +521,7 @@ public final class TileView extends View {
             // What makes it another picture: the tile, its place, the track or choice it shows, the look, streaming or not.
             pictures.want(kind, entity + "|" + fw + "x" + fh + "|" + mark(t) + "|" + ground + "|" + live);
             pictures.pace(kind, 5);
+            pictures.shape(kind, fw, fh, rad, Style.BG);
             Bitmap b = pictures.keepFresh(tessera, kind, null, pace > 0 ? pace : 3600000L, new Runnable() {
                 public void run() {
                     Map<String, Object> q = question("tile", index, entity, "tile:" + index, fw, fh, rad, shade, "cover", ground);
@@ -531,11 +532,13 @@ public final class TileView extends View {
             });
             if (b != null) now.put(index, b);
             else waiting = true;
+            if (pictures.showsOwn(kind)) own = true;
         }
         tilePictures = now;
+        // The tablet's own camera on a tile moves at five pictures a second.
         ui.postDelayed(new Runnable() {
             public void run() { invalidate(); }
-        }, waiting ? 500 : 1000);
+        }, own ? 200 : waiting ? 500 : 1000);
     }
 
     /**
@@ -4296,7 +4299,7 @@ public final class TileView extends View {
     private static final long CALL_END_SHOWN_MS = 2500, HUNG_UP_WAIT_MS = 2500;
     private int callStage = CALL_NONE;
     private String callKey = "", callPeer = "", callWhy = "", callLink = "", callTalk = "";
-    private boolean callVideo, callHeld, micOff, canSwitch, switching, canCancel, cancelling, listWaiting;
+    private boolean callVideo, callHeld, micOff, cameraOff, peerCamera = true, canSwitch, switching, canCancel, cancelling, listWaiting;
     private long callSince, callEndedAt, hungUpAt;
     private List<Tessera.Contact> contactRows = new ArrayList<Tessera.Contact>(), contactsComing = new ArrayList<Tessera.Contact>();
 
@@ -4390,9 +4393,11 @@ public final class TileView extends View {
             boolean again = callStage == CALL_LIVE;
             boolean changed = !c.link.equals(callLink);
             callHeld = false;
+            peerCamera = c.peerCamera;
             if (!again) {
                 callSince = SystemClock.uptimeMillis();
                 micOff = false;
+                cameraOff = false;
                 canSwitch = c.voiceSwitch >= 0;
                 switching = c.voiceSwitch == 1;
                 canCancel = c.echo >= 0;
@@ -4519,7 +4524,8 @@ public final class TileView extends View {
             return;
         }
         boolean live = callStage == CALL_LIVE;
-        android.graphics.Bitmap pic = live && callMedia != null ? callMedia.picture() : null;
+        // The other's picture, unless its camera is off in the call (the op's `pc`): its name then.
+        android.graphics.Bitmap pic = live && callMedia != null && (peerCamera || !callVideo) ? callMedia.picture() : null;
         // The other's picture beside the keys on glass lying down, above them standing; else the name in large.
         boolean lying = w > h * 1.15f;
         RectF room = lying ? new RectF(pad, pad, w - key - 8 * pad, h - pad) : new RectF(pad, pad, w - pad, h - key - 12 * pad);
@@ -4547,6 +4553,7 @@ public final class TileView extends View {
             else if (callStage == CALL_RING) line = "is calling";
             else if (callStage == CALL_ENDED) line = endWords(callWhy);
             else if (callHeld) line = "On hold";
+            else if (callVideo && !peerCamera) line = AlarmPanel.clock((now - callSince) / 1000) + " · camera off";
             else {
                 long s = (now - callSince) / 1000;
                 line = AlarmPanel.clock(s) + (callMedia != null && callMedia.hearing() ? " · speaking" : "");
@@ -4577,9 +4584,13 @@ public final class TileView extends View {
             }, 500);
         } else if (live) {
             boolean hasMic = Voice.uplink != null && !callTalk.isEmpty();
-            float a = lying ? h * 0.33f : w * 0.33f, b = lying ? h * 0.67f : w * 0.67f, fixed = lying ? cx : h - key / 2 - 8 * pad;
+            // A video call films with this tablet's camera too: its key turns the camera off for the other side.
+            boolean hasCamera = callVideo && Tessera.hasCamera;
+            int count = 1 + (hasMic ? 1 : 0) + (hasCamera ? 1 : 0), at = 0;
+            float fixed = lying ? cx : h - key / 2 - 8 * pad, span = lying ? h : w;
             if (hasMic) {
-                callKey(c, lying ? fixed : a, lying ? a : fixed, key, micOff ? 0xFFFFFFFF : 0xFF2C313B,
+                float p = span * (++at) / (count + 1);
+                callKey(c, lying ? fixed : p, lying ? p : fixed, key, micOff ? 0xFFFFFFFF : 0xFF2C313B,
                         micOff ? "microphone-off" : "microphone", micOff ? "Muted" : "Mute", new Runnable() {
                             public void run() {
                                 micOff = !micOff;
@@ -4593,10 +4604,27 @@ public final class TileView extends View {
                     // A white key: its icon in black.
                     glyphs.setColor(0xFF000000);
                     glyphs.setTextSize(key * 0.46f);
-                    c.drawText(Icons.sure(getContext(), "microphone-off"), lying ? fixed : a, (lying ? a : fixed) + key * 0.16f, glyphs);
+                    c.drawText(Icons.sure(getContext(), "microphone-off"), lying ? fixed : p, (lying ? p : fixed) + key * 0.16f, glyphs);
                 }
             }
-            callKey(c, hasMic ? (lying ? fixed : b) : cx, hasMic ? (lying ? b : fixed) : (lying ? h / 2f : fixed), key, red, "phone-hangup", "Hang up",
+            if (hasCamera) {
+                float p = span * (++at) / (count + 1);
+                callKey(c, lying ? fixed : p, lying ? p : fixed, key, cameraOff ? 0xFFFFFFFF : 0xFF2C313B,
+                        cameraOff ? "video-off" : "video", cameraOff ? "Camera off" : "Camera", new Runnable() {
+                            public void run() {
+                                cameraOff = !cameraOff;
+                                app.screen().callReport("camera", "", !cameraOff, callKey);
+                                invalidate();
+                            }
+                        });
+                if (cameraOff) {
+                    glyphs.setColor(0xFF000000);
+                    glyphs.setTextSize(key * 0.46f);
+                    c.drawText(Icons.sure(getContext(), "video-off"), lying ? fixed : p, (lying ? p : fixed) + key * 0.16f, glyphs);
+                }
+            }
+            float p = span * (++at) / (count + 1);
+            callKey(c, lying ? fixed : p, lying ? p : fixed, key, red, "phone-hangup", "Hang up",
                     new Runnable() {
                         public void run() { hangUp("end"); }
                     });

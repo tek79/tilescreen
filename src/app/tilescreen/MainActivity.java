@@ -93,6 +93,7 @@ public final class MainActivity extends Activity implements Screen.Ui, ScreenSet
         root.addView(widgets);
         root.addView(saver);
         root.addView(dark);
+        root.addView(cameraDot());
         setContentView(root);
         applyOrientation();
         keepScreenOn();
@@ -102,6 +103,34 @@ public final class MainActivity extends Activity implements Screen.Ui, ScreenSet
                 view.changed();
             }
         };
+    }
+
+    /**
+     * The camera in use (Screen camera, as Tessera's capture dot): a green dot in the top right corner over everything,
+     * solid while Home Assistant watches, a ring of the same size while the camera only senses. No setting hides it.
+     */
+    private View cameraDot() {
+        final float mm = getResources().getDisplayMetrics().xdpi / 25.4f;
+        final View v = new View(this) {
+            final android.graphics.Paint paint = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+
+            @Override
+            protected void onDraw(android.graphics.Canvas c) {
+                int state = ScreenCamera.dot;
+                if (state == 0) return;
+                float d = Math.max(6, 2 * mm), inset = Math.max(3, mm), line = Math.max(1, d / 5);
+                paint.setColor(0xFF4CAF50);
+                paint.setStyle(state == 1 ? android.graphics.Paint.Style.STROKE : android.graphics.Paint.Style.FILL);
+                paint.setStrokeWidth(line);
+                float r = state == 1 ? (d - line) / 2 : d / 2;
+                c.drawCircle(getWidth() - inset - d / 2, inset + d / 2, r, paint);
+            }
+        };
+        v.setWillNotDraw(false);
+        ScreenCamera.onDot = new Runnable() {
+            public void run() { v.postInvalidate(); }
+        };
+        return v;
     }
 
     @Override
@@ -488,7 +517,7 @@ public final class MainActivity extends Activity implements Screen.Ui, ScreenSet
     public void ring(final Tessera.Ring r) {
         boolean again = view.ringing();
         show(Screen.TILES);
-        if (r.chime) Chime.play();
+        if (r.chime) Sounds.chime(r.chimeSound);
         view.ring(r);
         if (!again) app.log("doorbell: " + r.name + " on the glass");
     }
@@ -510,7 +539,7 @@ public final class MainActivity extends Activity implements Screen.Ui, ScreenSet
         main.post(new Runnable() {
             public void run() {
                 if (c.state.equals("ring") || c.state.equals("out")) show(Screen.TILES);
-                if (c.state.equals("ring")) startRinging();
+                if (c.state.equals("ring")) startRinging(c.ringtone);
                 else if (!c.state.equals("set")) stopRinging();
                 view.call(c);
             }
@@ -519,23 +548,56 @@ public final class MainActivity extends Activity implements Screen.Ui, ScreenSet
 
     public void contacts(java.util.List<Tessera.Contact> rows, boolean append, boolean more) { view.contacts(rows, append, more); }
 
-    private void startRinging() {
+    /**
+     * The ring: Tessera's ringtone (`rt`, a file it chose) back to back, else the tablet's own every three seconds; `none`
+     * rings silently. At most a minute, and not at all with Call ringtone off.
+     */
+    private void startRinging(final String tone) {
         stopRinging();
-        if (!app.screen().screenSettings.callRingtone()) return;
+        if (!app.screen().screenSettings.callRingtone() || Sounds.NONE.equals(tone)) return;
         ringingSince = android.os.SystemClock.uptimeMillis();
-        ringing = new Runnable() {
+        final Runnable mine = new Runnable() {
             public void run() {
-                if (ringing != this || android.os.SystemClock.uptimeMillis() - ringingSince > 60000) return;
+                if (ringing != this) return;
+                if (android.os.SystemClock.uptimeMillis() - ringingSince > 60000) {
+                    Sounds.stopRing();
+                    return;
+                }
                 Chime.ringtone();
                 main.postDelayed(this, 3000);
             }
         };
-        main.post(ringing);
+        ringing = mine;
+        if (tone.isEmpty()) {
+            main.post(mine);
+            return;
+        }
+        new Thread(new Runnable() {
+            public void run() {
+                final short[] s = Sounds.get(tone, Sounds.WAIT_MS);
+                main.post(new Runnable() {
+                    public void run() {
+                        if (ringing != mine) return;
+                        if (s == null) {
+                            app.log("call: the ringtone wasn't there in time; the tablet's own rings");
+                            main.post(mine);
+                            return;
+                        }
+                        Sounds.startRing(s);
+                        // The loop ends with the call, or after a minute.
+                        main.postDelayed(new Runnable() {
+                            public void run() { if (ringing == mine) Sounds.stopRing(); }
+                        }, Math.max(0, 60000 - (android.os.SystemClock.uptimeMillis() - ringingSince)));
+                    }
+                });
+            }
+        }, "ringtone").start();
     }
 
     private void stopRinging() {
         if (ringing != null) main.removeCallbacks(ringing);
         ringing = null;
+        Sounds.stopRing();
     }
 
     public void changed() { view.changed(); }
@@ -696,6 +758,16 @@ public final class MainActivity extends Activity implements Screen.Ui, ScreenSet
                     app.log("screensaver: woke the screen");
                 } catch (Exception e) {
                     app.log("screensaver: waking failed: " + e);
+                }
+                // Android's screensaver (a dream) stays over the app when the screen is already on: only a key ends it,
+                // which takes root (KEYCODE_WAKEUP, as a press of the power key would).
+                if (app.dreaming() && Root.available()) {
+                    new Thread(new Runnable() {
+                        public void run() {
+                            app.log(Root.run("input keyevent 224") ? "screensaver: ended Android's screensaver"
+                                    : "screensaver: couldn't end Android's screensaver");
+                        }
+                    }, "wake-dream").start();
                 }
                 Intent front = new Intent(MainActivity.this, MainActivity.class)
                         .addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT | Intent.FLAG_ACTIVITY_NEW_TASK);

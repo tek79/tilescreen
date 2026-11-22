@@ -19,7 +19,7 @@ and eventually freezes.
 
 Tile Screen avoids all of that. It has no web view, no browser and no Home Assistant app inside it. It is a small
 native app with no libraries beyond the Android framework, and it draws Tessera's tiles itself with Android's canvas.
-The APK is about 1.1 MB, and it runs on a 5th-gen Fire 7.
+The APK is about 1.2 MB, and it runs on a 5th-gen Fire 7.
 
 It also suits people who already use Tessera on ESP32 panels and want a tablet or two to join them. Every screen is
 then laid out in one place.
@@ -28,7 +28,7 @@ then laid out in one place.
 
 - Tessera's tiles and cards, drawn the way its firmware draws them:
   - lights (with color and effects), switches, covers, climate, media players (with their library and favorites),
-    sensors with history graphs and meters, calendars, weather, the clock tile, the energy flow card, cameras (live streaming), the doorbell, light presets, template tiles, and Tessera plugins (flip clock, tap sound, waste collection, thermo dial, AV wall panel controls, voice assistant),
+    sensors with history graphs and meters, calendars, weather, the clock tile, the energy flow card, cameras (live streaming), the doorbell, light presets, template tiles, and Tessera plugins (flip clock, tap sound, waste collection, thermo dial, AV wall panel controls, voice assistant, Bluetooth proxy, screen camera),
     robot vacuums (map, cleaning by room, routines, suction and mop), alarm panels with a keypad, alerts and more;
   - the screensaver with Tessera's clock faces;
   - the on-screen settings page.
@@ -44,9 +44,13 @@ then laid out in one place.
   **calls between screens**, and Home Assistant's **Assist** with a **wake word heard on the tablet itself** (on a tablet
   with a microphone).
 - An ESPHome **Bluetooth proxy**, with connections, on a tablet with Bluetooth LE.
+- The tablet's **camera** in Home Assistant (Tessera's Screen camera): pictures, and **live video with sound** through
+  Tessera's Video in Home Assistant, from the front camera; **video calls** between screens; its own camera on a
+  tile; optionally the room's **light level** and **motion**, which
+  can wake the screen. A green dot shows while it's in use.
 - **Back up and restore** of the tablet's settings, encryption key included, to a file.
 
-**Plugins:** Tile Screen carries its own versions of seven Tessera plugins (see the guide). Any other plugin's tile shows its name and "Plugin missing".
+**Plugins:** Tile Screen carries its own versions of eight Tessera plugins (see the guide). Any other plugin's tile shows its name and "Plugin missing".
 
 ## Compatibility
 
@@ -83,7 +87,7 @@ harmlessly.
 Tile Screen works fully without root. On a rooted tablet (Magisk, for example), the app asks for root **once**,
 the first time it needs it, and Magisk shows its usual prompt. You can deny it.
 
-Root is used for five things:
+Root is used for six things:
 
 1. **Turning the backlight fully off.** Without root, Android can only set the screen to its dimmest level. That isn't
    dark, and on many tablets it is quite bright. With root, the app writes the brightness straight to the backlight
@@ -99,6 +103,9 @@ Root is used for five things:
 5. **Turning Location on for the Bluetooth proxy.** Android 6 and later hear no Bluetooth devices while Location is off.
    When the proxy is switched on and Location is off, the app turns it on in battery saving mode (no GPS):
    `settings put secure location_mode 2`, or `cmd location set-location-enabled true` on Android 10 and later.
+6. **Ending Android's screensaver.** When the wake word (or Home Assistant's Wake) wakes a tablet that uses Android's
+   screensaver, the app ends the screensaver with a wake key press (`input keyevent 224`); Android has no other way for
+   an app to end it while the screen is on.
 
 Root is never used for anything else. The app doesn't install anything, change system files, or run commands
 it gets from the network. Every root command is in [`Root.java`](src/app/tilescreen/Root.java),
@@ -114,20 +121,22 @@ The microphone needs no root.
 | Wi-Fi multicast | To announce the tablet over mDNS, so Home Assistant discovers it. |
 | Wake lock | To keep the processor and Wi-Fi awake, so Home Assistant can always reach the tablet, and to wake the screen. |
 | Run at startup | To start again after a reboot. |
-| Microphone (record audio) | For the doorbell's Talk, calls between screens and the voice assistant: a question, and the wake word while it is on. Nothing is recorded or kept; the sound goes only where the feature sends it. A tablet without a microphone simply doesn't offer these. |
+| Microphone (record audio) | For the doorbell's Talk, calls between screens, the voice assistant (a question, and the wake word while it is on) and the camera's video while someone watches it. Nothing is recorded or kept; the sound goes only where the feature sends it. A tablet without a microphone simply doesn't offer these. |
 | Change audio settings | To switch Android to its call mode with the speakerphone during a call between screens, and back after. |
 | Bluetooth, Bluetooth admin | For the Bluetooth proxy, only while its switch is on: to hear Bluetooth devices near the tablet and connect to them for Home Assistant, and to turn Bluetooth on. |
+| Camera | For Screen camera: pictures while Home Assistant asks for one or streams, the video while someone watches, and the light level and motion while that setting is on. The camera is off otherwise, and a green dot in the top right corner shows whenever it's on. Pictures go only to Home Assistant; for light level and motion only the two values leave the tablet. A tablet without a camera simply doesn't offer it. |
 | Storage (Android 4.3 and older only) | To export and import the settings in the Download folder, where Android has no file picker yet. |
 | Location (approximate and precise) | Android lets an app hear Bluetooth devices only with a location permission, since they can reveal where you are. The app never reads the tablet's location. |
 
 Android grants these when the app is installed (it doesn't ask at run time). On Android 6 and later you can still turn
-the microphone off in Android's settings for the app; Talk, calls and the assistant then hear silence. Android 6 and later
+the microphone or the camera off in Android's settings for the app; Talk, calls and the assistant then hear silence,
+and the camera gives no pictures. Android 6 and later
 also need **Location** switched on for any app to hear Bluetooth devices (the guide's *The Bluetooth proxy*).
 
 **The microphone is shared.** Android before version 10 lets only one recording use the microphone at a time. With the
-voice assistant's **Wake word** on, Tile Screen holds the microphone the whole time its tiles are on the glass, so other
-apps on the tablet (another voice assistant, a recorder) can't record then. It lets go whenever another app or Android's
-screensaver is in front, and calls and Talk take it over inside the app. Leave Wake word off on a tablet where another
+voice assistant's **Wake word** on, Tile Screen holds the microphone the whole time its tiles are on the glass (or under
+Android's screensaver), so other apps on the tablet (another voice assistant, a recorder) can't record then. It lets go
+whenever another app is in front, and calls and Talk take it over inside the app. Leave Wake word off on a tablet where another
 app needs the microphone. The guide's [Sharing the microphone](docs/GUIDE.md#sharing-the-microphone) has the details.
 
 ## Getting started
@@ -145,6 +154,11 @@ troubleshooting and the test harnesses.
 
 - The tablet starts unencrypted. Home Assistant gives it an encryption key automatically right after you add it,
   and every connection after that is encrypted. Add new tablets on a network you trust.
+- **The camera.** Anyone who can open the tablet's device or a dashboard with its camera in Home Assistant can see
+  through it while they look. To stop that for a while, disable the Camera entity in Home Assistant; to keep the
+  app from ever using the camera, turn its Camera permission off in Android's settings (Android 6 and later).
+  The video (port 8554) asks for a password worked out from the tablet's encryption key, and serves nothing while the
+  tablet has no key.
 - **Allow the device to perform Home Assistant actions** lets the tablet call Home Assistant actions, as any Tessera
   screen can. Anyone who can touch the tablet can use the tiles you put on it, so lay it out with that in mind.
 
@@ -174,7 +188,7 @@ The [user guide](docs/GUIDE.md#building-it-yourself) lists them.
 ```
 src/app/tilescreen/        Android side: activity, service, root helper, settings dialog
 src/app/tilescreen/core/   plain Java: ESPHome API server, Noise encryption, Tessera receiver, screen settings,
-                           the voice assistant and its wake word (audio front end, model runner)
+                           the voice assistant and its wake word (audio front end, model runner), the camera's motion
 src/app/tilescreen/ui/     the renderer: tiles, cards, clock faces, energy, meters, calendar, settings page
 assets/                    Material Design Icons font, the sounds, the wake word models (assets/wake)
 test/                      desktop harnesses and stand-ins for Android's drawing classes

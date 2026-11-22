@@ -54,6 +54,17 @@ public final class App extends Application {
         super.onCreate();
         self = this;
         prefs = getSharedPreferences("settings", MODE_PRIVATE);
+        // Android's own screensaver (a dream) covers the app but isn't another app: the wake word keeps listening under
+        // it (the app's foreground service keeps the microphone allowed), and a phrase heard wakes the screen.
+        android.content.IntentFilter dreams = new android.content.IntentFilter(android.content.Intent.ACTION_DREAMING_STARTED);
+        dreams.addAction(android.content.Intent.ACTION_DREAMING_STOPPED);
+        registerReceiver(new android.content.BroadcastReceiver() {
+            public void onReceive(android.content.Context c, android.content.Intent i) {
+                dreaming = android.content.Intent.ACTION_DREAMING_STARTED.equals(i.getAction());
+                WakeListener w = wake;
+                if (w != null) w.dreaming(dreaming);
+            }
+        }, dreams);
         // Boards (0.12.0): the old list of every board gave way to one full-feature board per shape. Automatic (0.12.0 to
         // 0.13.0) is now found once and kept (boardChoice), so a tablet on it keeps the board it had; a shape picked is kept.
         if (prefs.getInt("board_scheme", 0) < 3) {
@@ -373,13 +384,22 @@ public final class App extends Application {
     }
 
     private volatile WakeListener wake;
-    private volatile boolean visible = true;
+    private volatile boolean visible = true, dreaming;
+
+    /** Whether Android's screensaver (a dream) is up. */
+    boolean dreaming() { return dreaming; }
 
     /** A call or the doorbell's Talk takes the microphone from the wake word, and gives it back. */
     public void takeMicrophone(boolean on) {
+        ScreenCamera cam = camera;
+        VideoSound vs = cam == null ? null : cam.sound();
+        if (vs != null) vs.pause(on);
         WakeListener w = wake;
         if (w != null) w.take(on);
     }
+
+    /** The wake word's recording, for the video's sound to share; null without a microphone. */
+    WakeListener wakeListener() { return wake; }
 
     /** The app is on the glass, or another app (or Android's screensaver) is in front: the wake word rests then. */
     public void visible(boolean on) {
@@ -452,14 +472,32 @@ public final class App extends Application {
             // The wake word on the tablet (Wake word, Wake phrase): listens while it is on.
             final WakeListener w = new WakeListener(this, made.device, made.screenSettings, assist);
             w.visible(visible);
+            w.dreaming(dreaming);
             wake = w;
             made.onWakeChanged = new Runnable() {
                 public void run() { w.update(); }
             };
             w.update();
         }
+        // An alert's sound Tessera chose (the op `sound`).
+        made.tessera.soundPlayer = new app.tilescreen.core.Tessera.SoundPlayer() {
+            public void play(String link) { Sounds.alert(link); }
+        };
         // The Bluetooth proxy (Tessera's bt_proxy), on a tablet with Bluetooth LE: off until its switch is on.
         startBluetooth(made);
+        // The tablet's camera as Tessera's Screen camera, on a tablet with one: it runs only while something uses it.
+        boolean cam = ScreenCamera.usable(this);
+        app.tilescreen.core.Tessera.hasCamera = cam;
+        if (cam) {
+            try {
+                camera = new ScreenCamera(this, made);
+            } catch (Throwable t) {
+                app.tilescreen.core.Tessera.hasCamera = false;
+                log("camera: couldn't set up the camera: " + t);
+            }
+        } else {
+            log("camera: this tablet has no camera this app may use");
+        }
         log("sound: speaker" + (mic ? ", microphone" + (app.tilescreen.core.Tessera.echoCancel ? " with echo cancelling" : "") : ", no microphone"));
         // The battery's sensors before Home Assistant lists the entities.
         battery(registerReceiver(null, new android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED)));
@@ -543,8 +581,13 @@ public final class App extends Application {
         }
     }
 
+    private volatile ScreenCamera camera;
+
     private synchronized void stopScreen() {
         main.removeCallbacks(ipCheck);
+        ScreenCamera c = camera;
+        camera = null;
+        if (c != null) c.close();
         WakeListener w = wake;
         wake = null;
         if (w != null) w.close();
@@ -785,13 +828,21 @@ public final class App extends Application {
     private final class AssistMicrophone implements app.tilescreen.core.Assist.Microphone {
         private volatile boolean on;
         private Thread worker;
-        private boolean shared;
+        private boolean shared, sharedVideo;
 
         public synchronized boolean start(final app.tilescreen.core.Assist.Sink sink) {
             stop();
             WakeListener w = wake;
             if (w != null && w.attach(sink)) {
                 shared = true;
+                holdSpeaker(true);
+                return true;
+            }
+            // The video's own recording, while someone watches and the wake word's doesn't run.
+            ScreenCamera cam = camera;
+            VideoSound vs = cam == null ? null : cam.sound();
+            if (vs != null && vs.attach(sink)) {
+                sharedVideo = true;
                 holdSpeaker(true);
                 return true;
             }
@@ -835,6 +886,13 @@ public final class App extends Application {
                 shared = false;
                 WakeListener w = wake;
                 if (w != null) w.detach();
+                holdSpeaker(false);
+            }
+            if (sharedVideo) {
+                sharedVideo = false;
+                ScreenCamera cam = camera;
+                VideoSound vs = cam == null ? null : cam.sound();
+                if (vs != null) vs.detach();
                 holdSpeaker(false);
             }
         }

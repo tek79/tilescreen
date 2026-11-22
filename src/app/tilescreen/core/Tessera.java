@@ -39,6 +39,8 @@ public final class Tessera {
     public static volatile boolean hasSpeaker = true, hasMicrophone, echoCancel;
     /** Bluetooth LE that the proxy can use (Android 4.3 and later): the hello says it runs bt_proxy. */
     public static volatile boolean hasBluetooth;
+    /** The tablet has a camera this app may use: Tessera's Screen camera runs on it. */
+    public static volatile boolean hasCamera;
     /** The battery's level in percent from its last broadcast, -1 before one. */
     public static volatile int batteryLevel = -1;
 
@@ -351,12 +353,16 @@ public final class Tessera {
         public long rang;
         public int timeout = 60, door;
         public boolean quiet, chime = true;
+        /** The chime Tessera chose (`ch`, add-on 0.4.100): a file's link, `none`, or empty for the tablet's own. */
+        public String chimeSound = "";
     }
 
     /** The op `call` (docs/CALLS.md, calls.message): a call's state as the add-on holds it. */
     public static final class Call {
         /** out, ring, live, held, end, or set (only the call's choices). */
         public String state = "", key = "", name = "", icon = "", link = "", talk = "", why = "";
+        /** The ringtone Tessera chose (`rt`): a file's link, `none`, or empty for the tablet's own ring. */
+        public String ringtone = "";
         public boolean video, peerCamera = true;
         /** Voice switching and echo cancelling for the call, -1 where the message doesn't say. */
         public int voiceSwitch = -1, echo = -1;
@@ -376,6 +382,11 @@ public final class Tessera {
     }
 
     private volatile Calls calls;
+
+    /** Plays the op `sound`'s file once (the app's Sounds). */
+    public interface SoundPlayer { void play(String link); }
+
+    public volatile SoundPlayer soundPlayer;
 
     public void setCalls(Calls c) { calls = c; }
 
@@ -557,6 +568,14 @@ public final class Tessera {
         if (op.equals("camera")) return answerPicture(m, status);
         if (op.equals("doorbell")) return doorbell(m, status);
         if (op.equals("call")) return call(m, status);
+        if (op.equals("sound")) {
+            // An alert's sound (docs/SOUNDS.md): its file, once.
+            String u = nz(Json.str(m, "u"));
+            SoundPlayer p = soundPlayer;
+            if (!u.isEmpty() && p != null) p.play(cut(u, 300));
+            status[0] = "Synced";
+            return true;
+        }
         if (op.equals("contacts")) return contacts(m, status);
         if (op.equals("calendar_event")) return calendarEvent(m, status);
         if (op.equals("plugin")) {
@@ -622,6 +641,7 @@ public final class Tessera {
         c.link = cut(nz(Json.str(m, "l")), 240);
         c.talk = cut(nz(Json.str(m, "tk")), 240);
         c.why = cut(nz(Json.str(m, "w")), 20);
+        c.ringtone = cut(nz(Json.str(m, "rt")), 300);
         if (!c.state.equals("set")) log.log("call: " + c.state + (c.name.isEmpty() ? "" : " " + c.name) + (c.why.isEmpty() ? "" : " (" + c.why + ")"));
         Calls l = calls;
         if (l != null) l.call(c);
@@ -684,6 +704,7 @@ public final class Tessera {
             r.chime = !(nc != null && nc == 1);
             r.link = cut(nz(Json.str(m, "l")), 200);
             r.talk = cut(nz(Json.str(m, "tk")), 200);
+            r.chimeSound = cut(nz(Json.str(m, "ch")), 300);
             log.log("doorbell: " + r.name + " rang (" + camera + ")" + (r.talk.isEmpty() ? "" : ", Talk offered"));
             if (d != null) d.ring(r);
         }
@@ -950,6 +971,8 @@ public final class Tessera {
         for (String f : FEATURES) features.add(f);
         // A tablet with a battery: Tessera offers the top bar's battery item (docs/BATTERY.md).
         if (hasBattery) features.add("battery");
+        // Sounds as files (docs/SOUNDS.md): a chime and an alert's sound Tessera chose, on a tablet that plays sound.
+        if (hasSpeaker) features.add("sounds");
         Map<String, Object> a = new LinkedHashMap<String, Object>();
         a.put("status", status);
         a.put("rev", layout.revision);
@@ -984,11 +1007,13 @@ public final class Tessera {
         a.put("grids", grids);
         a.put("features", features);
         a.put("plugin_api", PLUGIN_API);
-        // The voice assistant only where there is a microphone that gives sound, the Bluetooth proxy only with Bluetooth LE.
+        // The voice assistant only where there is a microphone that gives sound, the Bluetooth proxy only with Bluetooth LE,
+        // Screen camera only with a camera.
         List<Object> running = new ArrayList<Object>();
         for (Map<String, Object> p : plugins) {
             if ("voice_assist".equals(p.get("id")) && !hasMicrophone) continue;
             if ("bt_proxy".equals(p.get("id")) && !hasBluetooth) continue;
+            if ("screen_camera".equals(p.get("id")) && !hasCamera) continue;
             running.add(p);
         }
         a.put("plugins", running);
@@ -1000,6 +1025,10 @@ public final class Tessera {
         caps.put("speaker", hasSpeaker);
         caps.put("microphone", hasMicrophone);
         caps.put("echo_cancel", echoCancel);
+        // A camera of its own (Screen camera): video calls film with it (the add-on reads its video server), and a live tile
+        // of its own camera is drawn from the camera itself (own_camera: the add-on answers such a tile "own:").
+        caps.put("camera", hasCamera);
+        if (hasCamera) caps.put("own_camera", true);
         // Template tiles (docs/TEXT_TILE.md, "Limits"): as many as a P4, and a P4's bytes of rows.
         caps.put("text_tiles", 8.0);
         caps.put("text_bytes", 3584.0);
@@ -1117,7 +1146,7 @@ public final class Tessera {
                 status[0] = "Synced";
                 return true;
             }
-            if (url.length() > 240 || (!url.isEmpty() && !url.startsWith("http://"))) return false;
+            if (url.length() > 240 || (!url.isEmpty() && !url.startsWith("http://") && !(hasCamera && url.startsWith("own:")))) return false;
             Long latest = views.get(of);
             status[0] = "Synced";
             if (latest == null || latest != n.longValue()) {
@@ -1133,7 +1162,7 @@ public final class Tessera {
                 || kind.equals("alert") || kind.equals("lib") || kind.equals("vmap"))) {
             return false;
         }
-        if (e.length() > 400 || url.length() > 240 || (!url.isEmpty() && !url.startsWith("http://"))) return false;
+        if (e.length() > 400 || url.length() > 240 || (!url.isEmpty() && !url.startsWith("http://") && !(hasCamera && url.startsWith("own:")))) return false;
         Double view = Json.dbl(m, "view");
         status[0] = "Synced";
         // The answer finds its question by its number: a tile's own picture comes as "live" for "live:<index>".

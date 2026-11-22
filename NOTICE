@@ -106,6 +106,14 @@ Flip clock, Tap sound, Waste collection, Voice assistant and Bluetooth proxy (ht
   Voice assistant's two sounds (assets/assist_wake.ogg, assets/assist_thinking.ogg) are its wake.wav and
   thinking.wav, made smaller (22 kHz mono Ogg Vorbis).
 
+Screen camera (https://github.com/MaxGramser/tessera-plugins, plugins/screen_camera)
+  Copyright (c) 2026 Max Gramser. GNU General Public License v3.0 only, which section 13 of this project's AGPL v3
+  lets it be combined with. ScreenCamera.java and core/Sensing.java reimplement its behaviour in Java (no code is
+  copied): its entities and settings by name, light level and motion from a coarse grid with the three-second pause
+  after a light switches, motion waking the screen, and the core's camera dot (Tessera's capture_dot.h).
+  core/Rtsp.java reimplements its video server (components/screen_video, rtsp_server.cpp): RTSP with RTP over the
+  connection, H.264 as RFC 6184, sender reports, and the password tessera_video works out from the API key.
+
 Thermo dial (https://github.com/alexcoscia/tessera-thermo-dial, as listed in Tessera's plugin index)
   Copyright (c) 2026 Alex Coscia. MIT License.
 

@@ -168,7 +168,7 @@ final class CallStream implements CallMedia {
                     at += n;
                 }
                 if (type.startsWith("image/")) {
-                    Bitmap b = BitmapFactory.decodeByteArray(body, 0, length);
+                    Bitmap b = app.tilescreen.ui.Pictures.decode(body, length);
                     if (b != null) {
                         picture = b;
                         pictures++;

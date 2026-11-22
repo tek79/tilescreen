@@ -347,6 +347,34 @@ public final class Screen {
         device.callHomeAssistant("esphome.screen_call", data, null, true);
     }
 
+    /** The tablet's own camera (Tessera's screen_camera): null until the app found one (enableCamera). */
+    public volatile EspDevice.Camera camera;
+    public volatile EspDevice.Sensor lightLevel;
+    public volatile EspDevice.BinarySensor motion;
+
+    /**
+     * The tablet has a camera: Home Assistant gets it as the device's Camera, with Light level and Motion and the
+     * plugin's settings, as a Tessera screen with Screen camera has them.
+     */
+    public synchronized EspDevice.Camera enableCamera(boolean bothSides) {
+        if (camera != null) return camera;
+        screenSettings.cameraToggles(device, bothSides);
+        EspDevice.Camera c = new EspDevice.Camera("camera", "Camera");
+        device.add(c);
+        EspDevice.Sensor l = new EspDevice.Sensor("light_level", "Light level");
+        l.unit = "lx";
+        l.deviceClass = "illuminance";
+        l.decimals = 1;
+        device.add(l);
+        EspDevice.BinarySensor m = new EspDevice.BinarySensor("motion", "Motion");
+        m.deviceClass = "motion";
+        device.add(m);
+        lightLevel = l;
+        motion = m;
+        camera = c;
+        return c;
+    }
+
     /** Home Assistant's Assist on the screen, by tap or wake word; null until the app found a microphone (enableVoice). */
     public volatile Assist assist;
 
