@@ -76,6 +76,36 @@ public class RenderMain {
      * at AA:BB:CC:00:00:01) takes connections, with the battery service (0x180F: its level 0x2A19 reads 87 and notifies,
      * a CCCD beside it) and a writable characteristic.
      */
+    /** A camera that draws its pictures: the time on a grey room, as a JPEG (CAMERA=1). */
+    static void fakeCamera(final Screen screen) {
+        Tessera.hasCamera = true;
+        final EspDevice.Camera cam = screen.enableCamera(true);
+        final int[] count = {0};
+        cam.source = new EspDevice.Camera.Source() {
+            public void wanted(final boolean stream) {
+                new Thread(new Runnable() { public void run() {
+                    try { Thread.sleep(100); } catch (InterruptedException e) { return; }
+                    try {
+                        java.awt.image.BufferedImage img = new java.awt.image.BufferedImage(640, 360, java.awt.image.BufferedImage.TYPE_INT_RGB);
+                        java.awt.Graphics2D g = img.createGraphics();
+                        g.setColor(new java.awt.Color(90, 90, 100)); g.fillRect(0, 0, 640, 360);
+                        g.setColor(java.awt.Color.WHITE); g.setFont(new java.awt.Font("SansSerif", java.awt.Font.BOLD, 40));
+                        g.drawString("picture " + (++count[0]) + (stream ? " (stream)" : ""), 40, 190);
+                        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+                        javax.imageio.ImageIO.write(img, "jpg", out);
+                        // A big one now and then, so the pieces show.
+                        byte[] b = out.toByteArray();
+                        if (count[0] % 3 == 0) { byte[] big = java.util.Arrays.copyOf(b, b.length + 40000); b = big; }
+                        System.out.println("[camera] picture " + count[0] + ", " + b.length + " bytes");
+                        cam.picture(b);
+                    } catch (Exception e) { e.printStackTrace(); }
+                } }).start();
+            }
+        };
+        screen.lightLevel.set(123.4f);
+        screen.motion.set(false);
+    }
+
     static void fakeBluetooth(final Screen screen) {
         Tessera.hasBluetooth = true;
         screen.screenSettings.bluetoothToggles(screen.device);
@@ -251,6 +281,7 @@ public class RenderMain {
             if (System.getenv("WAKE") != null) wake(app.screen, assist, System.getenv("WAKE"));
         }
         if (System.getenv("BLE") != null) fakeBluetooth(app.screen);
+        if (System.getenv("CAMERA") != null) fakeCamera(app.screen);
         TileView.ringMedia = new DeskStream();
         final TileView[] view = new TileView[1];
         final app.tilescreen.ui.SaverView[] saverView = new app.tilescreen.ui.SaverView[1];
