@@ -1,4 +1,6 @@
 import app.tilescreen.App;
+import app.tilescreen.core.Assist;
+import app.tilescreen.core.Tessera;
 import app.tilescreen.core.*;
 import app.tilescreen.ui.TileView;
 import java.awt.image.BufferedImage;
@@ -7,6 +9,68 @@ import java.nio.file.*;
 
 /** Runs the real TileView against the real core, rendering frames and replaying touches on command. */
 public class RenderMain {
+    /**
+     * The wake word as WakeListener runs it, on a desktop: a file plays as the microphone, in real time and over again,
+     * while Wake word is on and Home Assistant takes the voice assistant; WakeWord hears it, and a question uses the same
+     * sound (the test's microphone sink).
+     */
+    static volatile Assist.Sink wakeSink;
+
+    static void wake(final Screen screen, final Assist assist, final String file) throws Exception {
+        final byte[] pcm = Files.readAllBytes(Paths.get(file));
+        final WakeWord word = new WakeWord(new WakeWord.Models() {
+            public byte[] load(String id) throws IOException { return Files.readAllBytes(Paths.get("assets/wake/" + id + ".tflite")); }
+        });
+        assist.microphone = new Assist.Microphone() {
+            public boolean start(Assist.Sink sink) { wakeSink = sink; System.out.println("[mic] the wake word's recording"); return true; }
+            public void stop() { wakeSink = null; System.out.println("[mic] stopped"); }
+        };
+        Thread t = new Thread(new Runnable() {
+            public void run() {
+                byte[] part = new byte[640];
+                int at = 0;
+                boolean listening = false;
+                try {
+                    while (true) {
+                        boolean want = screen.screenSettings.assistWakeWord() && screen.device.voiceReady();
+                        if (!want) {
+                            if (listening) System.out.println("[wake] resting");
+                            listening = false;
+                            Thread.sleep(100);
+                            continue;
+                        }
+                        if (!listening) {
+                            word.choose(screen.screenSettings.assistWakePhrase());
+                            word.reset();
+                            at = 0;
+                            listening = true;
+                            System.out.println("[wake] listening for " + word.phrase());
+                        }
+                        if (!word.phrase().equals(WakeWord.PHRASES[screen.screenSettings.assistWakePhrase()])) {
+                            word.choose(screen.screenSettings.assistWakePhrase());
+                            System.out.println("[wake] listening for " + word.phrase());
+                        }
+                        if (at + 640 > pcm.length) at = 0;
+                        System.arraycopy(pcm, at, part, 0, 640);
+                        at += 640;
+                        Assist.Sink s = wakeSink;
+                        if (s != null) s.part(part.clone());
+                        String heard = word.hear(part, 640);
+                        if (heard != null) {
+                            System.out.println("[wake] heard " + heard + " (" + word.lastAverage + "/" + word.lastMost + ")");
+                            assist.wake(heard);
+                        }
+                        Thread.sleep(20);
+                    }
+                } catch (Exception e) {
+                    System.out.println("[wake] " + e);
+                }
+            }
+        }, "wake");
+        t.setDaemon(true);
+        t.start();
+    }
+
     public static void main(String[] a) throws Exception {
         final int port = Integer.parseInt(a[0]);
         int w = Integer.parseInt(a[1]), h = Integer.parseInt(a[2]);
@@ -19,6 +83,33 @@ public class RenderMain {
         s.node = "kitchen-fire"; s.friendly = "Kitchen Fire"; s.mac = "AA:BB:CC:DD:EE:02";
         app.screen = new Screen(s, app.shape(), null, null, null, new EspDevice.Logger() { public void log(String l) { System.out.println("[log] " + l); } });
         if (System.getenv("BATTERY") != null) app.screen.battery(87, "discharging", "none");
+        if (System.getenv("VOICE") != null) {
+            // A microphone that gives a tone in 20 ms parts, for the voice assistant's tests.
+            Tessera.hasMicrophone = true;
+            Assist assist = app.screen.enableVoice();
+            assist.microphone = new Assist.Microphone() {
+                volatile boolean on;
+                public boolean start(final Assist.Sink sink) {
+                    on = true;
+                    new Thread(new Runnable() {
+                        public void run() {
+                            byte[] part = new byte[640];
+                            while (on) {
+                                sink.part(part.clone());
+                                try { Thread.sleep(20); } catch (InterruptedException e) { return; }
+                            }
+                        }
+                    }).start();
+                    return true;
+                }
+                public void stop() { on = false; System.out.println("[mic] stopped"); }
+            };
+            assist.sounds = new Assist.Sounds() {
+                public void wake() { System.out.println("[sound] wake"); }
+                public void thinking() { System.out.println("[sound] thinking"); }
+            };
+            if (System.getenv("WAKE") != null) wake(app.screen, assist, System.getenv("WAKE"));
+        }
         final TileView[] view = new TileView[1];
         final app.tilescreen.ui.SaverView[] saverView = new app.tilescreen.ui.SaverView[1];
         app.screen.setUi(new Screen.Ui() {
@@ -80,6 +171,8 @@ public class RenderMain {
                     float x = Float.parseFloat(p[1]), y = Float.parseFloat(p[2]);
                     if (p[0].equals("down")) render(view[0], dir.resolve("_scratch.png"), view[0].getWidth(), view[0].getHeight());
                     view[0].onTouchEvent(new android.view.MotionEvent(p[0].equals("down") ? 0 : p[0].equals("move") ? 2 : 1, x, y));
+                } else if (p[0].equals("settings")) {
+                    view[0].openSettingsPage();
                 } else if (p[0].equals("saverpress")) {
                     // A finger on the screensaver: the key under it, let go after `held` ms.
                     int k = saverView[0].keyAt(Float.parseFloat(p[1]), Float.parseFloat(p[2]));
