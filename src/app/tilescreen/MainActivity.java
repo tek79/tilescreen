@@ -125,12 +125,14 @@ public final class MainActivity extends Activity implements Screen.Ui, ScreenSet
     protected void onStart() {
         super.onStart();
         widgets.start();
+        app.visible(true);
     }
 
     @Override
     protected void onStop() {
         widgets.stop();
         super.onStop();
+        app.visible(false);
         // Out of sight with the glass on and no screensaver of Android's starting: another app is in front.
         PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
         if (!isFinishing() && interactive(pm) && System.currentTimeMillis() - dreamStarted > 5000) {

@@ -39,7 +39,13 @@ public final class ScreenSettings {
     private int brightness = 100, standbyEnabled = 1, standbySeconds = 600, standbyBrightness = 20, nightEnabled = 1,
             nightStart = 1320, nightEnd = 420, nightBrightness = 10, homeOnStandby = 0, swipePages = 0, rotation = 0,
             autoHome = 1, autoHomeSeconds = 120, darkMode = 0, pageButtons = 1, homeButton = 1, loopPages = 1,
-            callRingtone = 1, callSwitching = 1, doNotDisturb = 0;
+            callRingtone = 1, callSwitching = 1, doNotDisturb = 0,
+            assistWakeSound = 1, assistThinkingSound = 1, assistShowPopup = 1;
+    /**
+     * The wake word (voice_assist's Wake word and Wake phrase). Tessera's is on by default; here it starts off, so an
+     * update never leaves a wall of tablets listening that nobody switched on.
+     */
+    private int assistWakeWord = 0, assistWakePhrase = 0;
     // This app's own, not Tessera's: Android's screen timeout and screensaver instead of Tessera's standby.
     private int androidSaver = 0;
     /** The app's own too: a tile's icon toggles it and a tap anywhere else opens its card. */
@@ -157,6 +163,43 @@ public final class ScreenSettings {
         return n;
     }
 
+    private EspDevice.Switch eWakeWord, eWakeSound, eThinkingSound, eShowPopup;
+    private EspDevice.Select eWakePhrase;
+    /** The wake word or its phrase changed (the app starts or stops listening). */
+    public volatile Runnable onWake;
+
+    /**
+     * The voice assistant's settings (Tessera's voice_assist plugin, named as its plugin.yaml names them): only on a
+     * tablet with a microphone, so Home Assistant shows none where there is no assistant.
+     */
+    public void voiceToggles(EspDevice d) {
+        if (eWakeSound != null) return;
+        eWakeWord = toggle(d, "wake_word", "Wake word", "mdi:account-voice", "assist_wake_word");
+        eWakeSound = toggle(d, "wake_sound", "Wake sound", "mdi:bell-ring", "assist_wake_sound");
+        eThinkingSound = toggle(d, "thinking_sound", "Thinking sound", "mdi:timer-sand", "assist_thinking_sound");
+        eShowPopup = toggle(d, "show_popup", "Show popup", "mdi:message-text", "assist_show_popup");
+        eWakePhrase = new EspDevice.Select("wake_phrase", "Wake phrase", WakeWord.PHRASES);
+        eWakePhrase.icon = "mdi:chat-processing";
+        eWakePhrase.category = EspDevice.CATEGORY_CONFIG;
+        eWakePhrase.onSet = new EspDevice.Select.OnSet() {
+            public void set(String option) {
+                int i = java.util.Arrays.asList(WakeWord.PHRASES).indexOf(option);
+                if (i >= 0) ScreenSettings.this.set("assist_wake_phrase", i);
+                else publish();
+            }
+        };
+        d.add(eWakePhrase);
+        publish();
+    }
+
+    public synchronized boolean assistWakeWord() { return assistWakeWord != 0; }
+    public synchronized int assistWakePhrase() { return assistWakePhrase; }
+
+    public synchronized boolean assistWakeSound() { return assistWakeSound != 0; }
+    public synchronized boolean assistThinkingSound() { return assistThinkingSound != 0; }
+    public synchronized boolean assistShowPopup() { return assistShowPopup != 0; }
+    public boolean hasVoice() { return eWakeSound != null; }
+
     private EspDevice.Switch toggle(EspDevice d, String id, String name, String icon, final String key) {
         EspDevice.Switch s = new EspDevice.Switch(id, name);
         s.icon = icon;
@@ -212,6 +255,10 @@ public final class ScreenSettings {
         if (store != null) store.save(after);
         publish();
         apply();
+        if (key.equals("assist_wake_word") || key.equals("assist_wake_phrase")) {
+            Runnable w = onWake;
+            if (w != null) w.run();
+        }
         Ui u = ui;
         if (u != null) u.looks();
         return true;
@@ -244,6 +291,11 @@ public final class ScreenSettings {
         else if (key.equals("call_ringtone")) callRingtone = flag(value);
         else if (key.equals("call_voice_switching")) callSwitching = flag(value);
         else if (key.equals("do_not_disturb")) doNotDisturb = flag(value);
+        else if (key.equals("assist_wake_sound")) assistWakeSound = flag(value);
+        else if (key.equals("assist_thinking_sound")) assistThinkingSound = flag(value);
+        else if (key.equals("assist_show_popup")) assistShowPopup = flag(value);
+        else if (key.equals("assist_wake_word")) assistWakeWord = flag(value);
+        else if (key.equals("assist_wake_phrase")) assistWakePhrase = clamp(value, 0, WakeWord.PHRASES.length - 1);
         else if (key.equals("android_saver")) {
             androidSaver = flag(value);
             if (androidSaver != 0) { dimmed = false; sleepRequested = false; }
@@ -281,6 +333,11 @@ public final class ScreenSettings {
         m.put("call_ringtone", (double) callRingtone);
         m.put("call_voice_switching", (double) callSwitching);
         m.put("do_not_disturb", (double) doNotDisturb);
+        m.put("assist_wake_sound", (double) assistWakeSound);
+        m.put("assist_thinking_sound", (double) assistThinkingSound);
+        m.put("assist_show_popup", (double) assistShowPopup);
+        m.put("assist_wake_word", (double) assistWakeWord);
+        m.put("assist_wake_phrase", (double) assistWakePhrase);
         m.put("android_saver", (double) androidSaver);
         m.put("icon_toggles", (double) iconToggles);
         m.put("system_brightness", (double) systemBrightness);
@@ -306,11 +363,11 @@ public final class ScreenSettings {
     }
 
     private void publish() {
-        int b, sb, nb, ss, ah, st, ne, nst, nen, dk, ahm, hos, sw, pb, hb, lp, cr, cs, dnd, rot, as, it, sys, lw, bd, ts, wb, wd;
+        int b, sb, nb, ss, ah, st, ne, nst, nen, dk, ahm, hos, sw, pb, hb, lp, cr, cs, dnd, aw, at, ap, ww, wp, rot, as, it, sys, lw, bd, ts, wb, wd;
         synchronized (this) {
             b = brightness; sb = standbyBrightness; nb = nightBrightness; ss = standbySeconds; ah = autoHomeSeconds;
             st = standbyEnabled; ne = nightEnabled; nst = nightStart; nen = nightEnd; dk = darkMode; ahm = autoHome;
-            hos = homeOnStandby; sw = swipePages; pb = pageButtons; hb = homeButton; lp = loopPages; cr = callRingtone; cs = callSwitching; dnd = doNotDisturb; rot = rotation; as = androidSaver; it = iconToggles;
+            hos = homeOnStandby; sw = swipePages; pb = pageButtons; hb = homeButton; lp = loopPages; cr = callRingtone; cs = callSwitching; dnd = doNotDisturb; aw = assistWakeSound; at = assistThinkingSound; ap = assistShowPopup; ww = assistWakeWord; wp = assistWakePhrase; rot = rotation; as = androidSaver; it = iconToggles;
             sys = systemBrightness; lw = liftWake; bd = batteryDark;
             ts = tapSound; wb = wasteInBar; wd = wasteDaysAhead;
         }
@@ -331,6 +388,13 @@ public final class ScreenSettings {
         eCallRingtone.set(cr != 0);
         eCallSwitching.set(cs != 0);
         eDoNotDisturb.set(dnd != 0);
+        if (eWakeSound != null) {
+            eWakeWord.set(ww != 0);
+            eWakePhrase.set(WakeWord.PHRASES[wp]);
+            eWakeSound.set(aw != 0);
+            eThinkingSound.set(at != 0);
+            eShowPopup.set(ap != 0);
+        }
         eNightStart.set(nst);
         eNightEnd.set(nen);
         eRotation.set(rot + "°");
@@ -368,6 +432,11 @@ public final class ScreenSettings {
         if (key.equals("call_ringtone")) return callRingtone;
         if (key.equals("call_voice_switching")) return callSwitching;
         if (key.equals("do_not_disturb")) return doNotDisturb;
+        if (key.equals("assist_wake_sound")) return assistWakeSound;
+        if (key.equals("assist_thinking_sound")) return assistThinkingSound;
+        if (key.equals("assist_show_popup")) return assistShowPopup;
+        if (key.equals("assist_wake_word")) return assistWakeWord;
+        if (key.equals("assist_wake_phrase")) return assistWakePhrase;
         if (key.equals("android_saver")) return androidSaver;
         if (key.equals("icon_toggles")) return iconToggles;
         if (key.equals("system_brightness")) return systemBrightness;
@@ -505,11 +574,14 @@ public final class ScreenSettings {
     }
 
     /** Wake from Home Assistant: lights a dimmed screen; on a lit one, the standby time counts from now. */
-    public void wakeButton() {
+    public void wakeButton() { wakeBy("Home Assistant"); }
+
+    /** The same for `who` (Home Assistant's Wake, the voice assistant's wake word or question). */
+    public void wakeBy(String who) {
         boolean was;
         if (androidSaver()) {
             synchronized (this) { lastTouch = System.currentTimeMillis(); }
-            log.log("wake from Home Assistant (Android screensaver)");
+            log.log("wake from " + who + " (Android screensaver)");
             Ui u = ui;
             if (u != null) u.systemWake();
             return;
@@ -519,7 +591,7 @@ public final class ScreenSettings {
             if (was) wakeLocked(); else lastTouch = System.currentTimeMillis();
         }
         if (was) {
-            log.log("wake from Home Assistant");
+            log.log("wake from " + who);
             apply();
         }
     }

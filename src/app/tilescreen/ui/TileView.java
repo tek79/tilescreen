@@ -31,6 +31,7 @@ import app.tilescreen.core.Json;
 import app.tilescreen.core.Screen;
 import app.tilescreen.core.Tessera;
 import app.tilescreen.core.Voice;
+import app.tilescreen.core.Assist;
 
 /** Draws a Tessera layout and turns touches into Home Assistant actions. */
 public final class TileView extends View {
@@ -366,6 +367,7 @@ public final class TileView extends View {
         if (settingsOpen) drawSettings(c, w, h);
         if (ring != null) drawRing(c, w, h);
         else if (callStage != CALL_NONE) drawCall(c, w, h);
+        else drawAssistPopup(c, w, h);
         if (alert != null) drawAlert(c, w, h);
         if (banner != null && SystemClock.uptimeMillis() < bannerUntil) drawBanner(c, w, h);
     }
@@ -4134,6 +4136,145 @@ public final class TileView extends View {
             if (door != null) drawDoorKey(c, door, now);
             if (talkKey != null) drawTalkKey(c, talkKey, r);
         }
+    }
+
+    // ----- the voice assistant's popup (voice_assist voice_popup.h) -----
+
+    /**
+     * While a question goes on, and for a while after its answer: a disc in the colour of where it is with its icon, the
+     * word for it beside, and under them what was heard and the answer as far as it is spoken. Rings ripple out of the
+     * disc while it listens, an arc turns around it while Assist thinks, a ring breathes while it answers. A tap on it
+     * stops what runs (or closes it once it is done), a tap beside it or its close key closes it.
+     */
+    private void drawAssistPopup(Canvas c, int w, int h) {
+        final Assist a = app.screen().assist;
+        if (a == null) return;
+        if (a.changed == null) {
+            a.changed = new Runnable() {
+                public void run() { postInvalidate(); }
+            };
+        }
+        if (!a.popupOpen()) return;
+        long now = SystemClock.uptimeMillis();
+        fill.setColor(0x99000000);
+        c.drawRect(0, 0, w, h, fill);
+        Hit beside = new Hit(new RectF(0, 0, w, h));
+        beside.tap = new Runnable() {
+            public void run() { a.closePopup(); }
+        };
+        hits.add(beside);
+        float pad = 5 * u, cw = Math.min(w * 0.86f, 130 * u);
+        float disc = 13 * u;
+        int phase = a.phase();
+        String heard = a.heard(), said = a.said();
+        float line = 4.6f * u, big = 5.4f * u;
+        // The card is as high as what it says: the disc and its word alone while it listens, the words under them as they come.
+        int heardLines = heard.isEmpty() ? 0 : (said.isEmpty() ? 2 : 1);
+        java.util.List<String> saidLines = wrapWords(said, cw - 2 * pad, big * 0.82f, regular);
+        int most = Math.max(1, (int) ((h * 0.8f - disc - 3 * pad - heardLines * line) / big));
+        int from = Math.max(0, saidLines.size() - most);
+        float ch = pad * 2 + disc + (heardLines > 0 ? 2.5f * u + heardLines * line : 0) + (saidLines.isEmpty() ? 0 : 2.5f * u + (saidLines.size() - from) * big);
+        RectF card = new RectF((w - cw) / 2, (h - ch) / 2, (w + cw) / 2, (h + ch) / 2);
+        fill.setColor(Style.CARD);
+        c.drawRoundRect(card, 4 * u, 4 * u, fill);
+        Hit tap = new Hit(new RectF(card));
+        tap.tap = new Runnable() {
+            public void run() { a.tapPopup(); }
+        };
+        hits.add(tap);
+        int colour = phase == Assist.FAILED ? Style.RED : phase == Assist.THINKING ? Style.AMBER : Style.BLUE;
+        float dx = card.left + pad + disc / 2, dy = card.top + pad + disc / 2;
+        line(colour);
+        if (phase == Assist.LISTENING) {
+            // Rings ripple out of the disc.
+            for (int i = 0; i < 2; i++) {
+                float t = ((now + i * 600) % 1200) / 1200f;
+                this.line.setAlpha((int) (200 * (1 - t)));
+                c.drawCircle(dx, dy, disc / 2 + t * 4 * u, this.line);
+            }
+        } else if (phase == Assist.THINKING) {
+            // An arc turns around it.
+            float r = disc / 2 + 1.6f * u, start = (now % 1000) / 1000f * 360f;
+            this.line.setAlpha(255);
+            this.line.setStrokeWidth(0.8f * u);
+            c.drawArc(new RectF(dx - r, dy - r, dx + r, dy + r), start, 90, false, this.line);
+        } else if (phase == Assist.ANSWERING) {
+            // A ring breathes slowly.
+            float t = (float) (0.5 + 0.5 * Math.sin(now / 400.0));
+            this.line.setAlpha((int) (90 + 120 * t));
+            c.drawCircle(dx, dy, disc / 2 + 1.4f * u, this.line);
+        }
+        this.line.setAlpha(255);
+        fill.setColor(phase == Assist.IDLE ? Style.RAISED : colour);
+        c.drawCircle(dx, dy, disc / 2, fill);
+        glyphs.setColor(phase == Assist.IDLE ? Style.DIM : 0xFFFFFFFF);
+        glyphs.setTextSize(disc * 0.5f);
+        c.drawText(Icons.glyph(phase == Assist.IDLE ? VoiceAssistPlugin.ROBOT : VoiceAssistPlugin.icon(a)), dx, dy + disc * 0.18f, glyphs);
+        // The word beside, short of the close key.
+        String word = phase == Assist.IDLE ? "Voice assistant" : VoiceAssistPlugin.word(a);
+        text.setTypeface(medium);
+        text.setTextSize(6 * u);
+        text.setColor(Style.TEXT);
+        float wx = card.left + pad + disc + 3 * u;
+        c.drawText(fit(word, card.right - pad - 10 * u - wx), wx, dy + 2.1f * u, text);
+        glyphs.setColor(Style.DIM);
+        glyphs.setTextSize(6 * u);
+        c.drawText(Icons.sure(getContext(), "close"), card.right - pad - 3 * u, card.top + pad + 4.5f * u, glyphs);
+        Hit close = new Hit(new RectF(card.right - pad - 10 * u, card.top, card.right, card.top + pad + 10 * u));
+        close.tap = new Runnable() {
+            public void run() { a.closePopup(); }
+        };
+        hits.add(close);
+        float y = card.top + pad + disc + 2.5f * u;
+        if (heardLines > 0) {
+            java.util.List<String> hl = wrapWords(heard, cw - 2 * pad, line * 0.78f, regular);
+            text.setTypeface(regular);
+            text.setTextSize(line * 0.78f);
+            text.setColor(Style.DIM);
+            for (int i = 0; i < Math.min(heardLines, hl.size()); i++) {
+                String s = hl.get(i);
+                if (i == heardLines - 1 && hl.size() > heardLines) s = fit(s + " …", cw - 2 * pad);
+                c.drawText(s, card.left + pad, y + line * 0.8f + i * line, text);
+            }
+            y += heardLines * line + 2.5f * u;
+        }
+        if (!saidLines.isEmpty()) {
+            text.setTypeface(regular);
+            text.setTextSize(big * 0.82f);
+            text.setColor(Style.TEXT);
+            for (int i = from; i < saidLines.size(); i++) c.drawText(saidLines.get(i), card.left + pad, y + big * 0.8f + (i - from) * big, text);
+        }
+        text.setTypeface(regular);
+        ui.postDelayed(new Runnable() {
+            public void run() { invalidate(); }
+        }, phase == Assist.LISTENING || phase == Assist.THINKING || phase == Assist.ANSWERING ? 50 : 500);
+    }
+
+    private void line(int colour) {
+        this.line.setColor(colour);
+        this.line.setStrokeWidth(0.5f * u);
+    }
+
+    /** Words of `s` onto lines of `width` at `size`. */
+    private java.util.List<String> wrapWords(String s, float width, float size, Typeface face) {
+        java.util.List<String> out = new ArrayList<String>();
+        if (s == null || s.isEmpty()) return out;
+        text.setTypeface(face);
+        text.setTextSize(size);
+        StringBuilder line = new StringBuilder();
+        for (String word : s.split(" ")) {
+            String next = line.length() == 0 ? word : line + " " + word;
+            if (text.measureText(next) > width && line.length() > 0) {
+                out.add(line.toString());
+                line.setLength(0);
+                line.append(word);
+            } else {
+                line.setLength(0);
+                line.append(next);
+            }
+        }
+        if (line.length() > 0) out.add(line.toString());
+        return out;
     }
 
     // ----- calls between screens (docs/CALLS.md, module_call.cpp) -----

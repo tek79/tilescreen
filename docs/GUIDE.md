@@ -8,7 +8,7 @@ It is built for low-memory tablets such as the 5th-gen Fire 7 running LineageOS.
 view and no Home Assistant app inside it: a small native app draws the tiles itself. It should run
 on Android 4.2 and later.
 
-This guide covers version 0.16.3.
+This guide covers version 0.18.1.
 
 ## 1. Install it on the tablet
 
@@ -31,6 +31,10 @@ You need to sideload the APK once per tablet. Pick whichever way is easier.
 Open **Tile Screen**. The first time you press the Home button, Android asks which home app to
 use. Choose Tile Screen and **Always** to make it a kiosk that starts at boot. It also starts by
 itself after a reboot.
+
+Android grants the app's permissions when it is installed; the README's **Other Android permissions** says what each is
+for. One of them is the microphone, for Talk, calls and the voice assistant. With the assistant's wake word on, other
+apps on the tablet may not be able to record: see **Sharing the microphone** below.
 
 ## 2. Add it to Home Assistant
 
@@ -181,7 +185,8 @@ Other limits:
 
   The shape only sets the editor's preview and what Tessera offers: the tablet draws at its own size, so the editor's
   text can look larger or smaller than on the tablet. Changing the shape doesn't change the grid. Tessera also offers
-  plugins for hardware a tablet lacks (Voice assist, Bluetooth proxy, Screen camera); added, they show as not running.
+  plugins for hardware a tablet lacks (Bluetooth proxy, Screen camera); added, they show as not running. Voice assistant
+  is one Tile Screen carries, on a tablet with a microphone (see **The voice assistant**).
 - A square screen has one grid whichever way it hangs, as Tessera's square boards, and starts at Tessera's 2×3.
 - The grid defaults to 4×3 in landscape (3×4 in portrait). Choose it in Tessera's editor (the screen's Settings → Grid, from 1×1 to 8×8, and Landscape or Portrait), as for an ESP32 screen; the tablet takes it when you save. The tablet's own settings set the landscape grid too.
 - **Deleting the screen from Home Assistant:** the tablet keeps its encryption key. To add it again,
@@ -203,6 +208,7 @@ group, or pick its face in the Screensaver card.
 | Waste collection | 1.0.7 | A tile with the next collection ("Paper", "Tomorrow"), a card with four weeks of collections (a tap on the tile, or a calendar tile whose tap is set to it), and a top bar item ("Tomorrow: Paper") with **Waste in top bar** and **Waste days ahead**. The top bar reads the calendar of the first Next collection tile of the layout. |
 | Thermo dial | 0.2.0 | A climate tile with the target large and - / mode / + keys, and a card with a dial to drag; the target goes to Home Assistant when you let go (the keys after 600 ms). |
 | AV wall panel controls | 0.1.1 | Five tiles of keys: transport, D-pad, volume or channel, a number pad and a selector grid. Each key runs the action typed for it in the editor, such as `remote.send_command command=UP`. |
+| Voice assistant | 0.4.0 | Home Assistant's Assist on the tablet: the **Assistant** tile, its top bar item, the popup, and the wake word heard on the tablet itself. Only on a tablet with a microphone; see **The voice assistant**. |
 
 A plugin's tiles use the tablet's permission to perform Home Assistant actions, as every control does.
 
@@ -253,8 +259,71 @@ The screen's switches **Call ringtone** (off: a call lights the screen up withou
 **Do not disturb** (calls to it are refused, and the list says so) are on its settings page and in Home Assistant. Home
 Assistant gets the add-on's events `esp_screens_call_started`, `_answered`, `_missed` and `_ended`.
 
-The microphone is open only while Talk or a call is on. Android's own echo canceller and noise suppressor are used where
-the tablet has them, and the tablet tells Tessera whether it has a microphone and an echo canceller.
+The microphone is open only while Talk or a call is on, a question to the voice assistant listens, or the wake word is
+on (see **The voice assistant**). For Talk and calls, Android's own echo canceller and noise suppressor are used where
+the tablet has them, and the tablet tells Tessera whether it has a microphone and an echo canceller. A call or Talk takes
+the microphone from the wake word and gives it back when it ends.
+
+## The voice assistant
+
+On a tablet with a microphone, Home Assistant's **Assist** works as Tessera's **Voice assistant** plugin does on an
+ESP32-P4 screen: by a tap, or by a wake word the tablet hears itself. Add the plugin to the tablet on Tessera's
+**Plugins** page (it records it, nothing is built), then place its **Assistant** tile and, if you like, its item in the
+top bar.
+
+- **Ask** by saying the wake phrase (with **Wake word** on), with a tap on the tile, or with **Ask the assistant** on the
+  settings page. The tablet listens until Home Assistant hears the end of what you said, then thinks and answers on the
+  tablet's speaker. A tap while it runs stops it.
+- **A popup** comes over the screen while it listens, thinks and answers, with what it heard and the answer word by word
+  as it is spoken. It stays 30 seconds after the answer; a tap beside it or its close key closes it sooner.
+- **Settings**, on the settings page (under Screen) and in Home Assistant: **Wake word**, **Wake phrase**, **Wake
+  sound** (a short sound when it starts to listen), **Thinking sound** (a soft sound while Home Assistant works out the
+  answer) and **Show popup**.
+- In Home Assistant the tablet is a voice assistant device. Choose its **Assist pipeline** on its device page; speech
+  to text, the conversation and text to speech are whatever that pipeline uses. When Home Assistant asks something
+  back, the tablet listens again. `assist_satellite.announce` plays on it too.
+
+A tablet without a working microphone doesn't offer the assistant.
+
+### The wake word
+
+Turn on **Wake word** and the tablet listens for its **Wake phrase**: **Okay Nabu**, **Hey Jarvis** or **Hey Mycroft**,
+the three Tessera's plugin carries. The tile then says *Say "Okay Nabu"*. Home Assistant's own **Wake word** choice on
+the voice assistant device changes the Wake phrase too.
+
+- **It is heard on the tablet.** The tablet runs ESPHome's microWakeWord models itself, the same models and the same
+  rules an ESP32 screen uses, so it hears the phrase as well as one does. Nothing leaves the tablet until it hears the
+  phrase; then what you say goes to Home Assistant, as after a tap. A second model listens for a voice, so a sound
+  that only resembles the phrase is left alone.
+- **It is off at first.** Tessera's plugin starts with it on; here you switch it on per tablet, so an update never
+  leaves every tablet listening.
+- **When it listens:** while Wake word is on, Home Assistant is connected, and the tiles are on the glass, also dimmed
+  in Tessera's standby or under its screensaver. It rests while another app or Android's screensaver is in front, while
+  Android has turned the screen off (with **Use Android screensaver**), and while a call or the doorbell's Talk has the
+  microphone.
+- **How much it costs:** about 150 KB in the app and a little processor time, all the time it listens. The log says how
+  much once, a minute after it starts listening (*wake: hearing takes 2.0% of one core*). On a slow old tablet, if that
+  is too much, leave Wake word off there; a tap still asks.
+- **The log** (Tablet settings → Log) shows *wake: listening for "Okay Nabu"*, each phrase it heard with how sure it was,
+  and why it rests.
+
+### Sharing the microphone
+
+**Android before version 10 lets only one recording use the microphone at a time.** While the wake word listens, the
+tablet holds the microphone the whole time, so on Android 9 and older:
+
+- **other apps can't record**: another voice assistant (the Home Assistant app's Assist, Google's), a voice recorder, a
+  video call app. They fail to start or record silence;
+- **the wake word gives way inside Tile Screen**: calls and the doorbell's Talk take the microphone from it and give it
+  back when they end, and a question uses the wake word's own recording;
+- **another app in front gets it**: the wake word rests whenever another app (or Android's screensaver) is in front, so
+  an app you open on the tablet can record. It listens again when the tiles come back.
+
+On Android 10 and later two apps can record at once and Android gives the sound to the one in front: while the tiles
+are on the glass, an app recording in the background gets silence.
+
+If you use another voice assistant on the same tablet, or an app that records in the background, leave **Wake word**
+off on that tablet. Tapping the Assistant tile still works.
 
 ## Live cameras
 
@@ -278,7 +347,8 @@ chime on the notification volume and opens the camera live, full screen:
 - with a lock or a door action in the automation, a **Door** key stands beside the picture: tap once ("Tap again to
   open"), then again within five seconds. It shows the lock's state, and "Unlocking" until the lock answers.
 
-The tablet has no Talk or Sound key: the picture comes without the doorbell's sound.
+With Home Assistant's two-way audio, the view has a **Talk** key (see **Sound: the speaker, Talk and calls**). There is
+no **Sound** key yet: the picture comes without the doorbell's own sound, which an ESP32-P4 screen plays.
 
 ## Light presets
 
@@ -386,6 +456,12 @@ on a desktop JVM against the real clients:
 - `test/pictures.py` answers its picture requests through the add-on's own validators and sender.
 - `test/render.py` with `RenderMain` runs the real tile renderer on Java2D stand-ins for Android's
   drawing classes. It renders frames and replays touches.
+- `test/alarm_test.py`, `test/call_test.py` and `test/assist_test.py` drive the alarm keypad, calls between screens and
+  the voice assistant with the add-on's code and `aioesphomeapi`.
+- `test/wake_test.py` drives the wake word end to end (Home Assistant's wake word choice, Wake word and Wake phrase, a
+  question the phrase starts). `test/WakeMain.java` checks the wake word's sums against the originals: the audio front
+  end against TensorFlow Lite Micro's C code, every value, and the models against TensorFlow Lite Micro's own
+  interpreter, every output. `test/wake_tables.py` makes `core/MicroTables.java` from the C code's tables.
 
 ## Credits and license
 

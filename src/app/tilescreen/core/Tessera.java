@@ -982,7 +982,13 @@ public final class Tessera {
         a.put("grids", grids);
         a.put("features", features);
         a.put("plugin_api", PLUGIN_API);
-        a.put("plugins", new ArrayList<Object>(plugins));
+        // The voice assistant only where there is a microphone that gives sound: Tessera offers it there only.
+        List<Object> running = new ArrayList<Object>();
+        for (Map<String, Object> p : plugins) {
+            if ("voice_assist".equals(p.get("id")) && !hasMicrophone) continue;
+            running.add(p);
+        }
+        a.put("plugins", running);
         // What this screen can do (firmware hw.h, page_delivery.caps_of): it streams live cameras, so many tiles at once.
         Map<String, Object> caps = new LinkedHashMap<String, Object>();
         caps.put("live", true);

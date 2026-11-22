@@ -191,6 +191,7 @@ final class PluginKit {
             all.add(new WastePlugin());
             all.add(new ThermoDialPlugin());
             all.add(new AvPanelPlugin());
+            all.add(new VoiceAssistPlugin());
             List<Map<String, Object>> hello = new ArrayList<Map<String, Object>>();
             for (Plugin p : all) hello.add(p.hello());
             Tessera.plugins = hello;

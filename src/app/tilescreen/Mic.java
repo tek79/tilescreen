@@ -27,7 +27,7 @@ import app.tilescreen.core.Voice;
  * once it has given sound. The log says which one it took.
  *
  * Nothing runs until something starts it, and it all stops with stop(): the microphone is open only while Talk or a
- * call is.
+ * call is. The wake word (WakeListener) gives the microphone up for that time.
  */
 final class Mic implements Voice.Uplink {
     static final int RATE = 16000;
@@ -42,8 +42,8 @@ final class Mic implements Voice.Uplink {
     private Thread worker;
     private volatile Socket socket;
     private volatile boolean stopping;
-    /** The input that worked last, tried first next time: {source, rate, effects 1/0}. */
-    private static volatile int[] good;
+    /** The input that worked last, tried first next time: {source, rate, effects 1/0}; the wake word's apart. */
+    private static volatile int[] good, goodWake;
 
     /** Whether the tablet can record at all. */
     static boolean usable() {
@@ -94,14 +94,19 @@ final class Mic implements Voice.Uplink {
 
     private static final int[] SOURCES = {MediaRecorder.AudioSource.VOICE_COMMUNICATION, MediaRecorder.AudioSource.MIC,
             MediaRecorder.AudioSource.DEFAULT};
+    /** The wake word hears best what a speech recognizer would: the voice recognition input, plain. */
+    private static final int[] WAKE_SOURCES = {MediaRecorder.AudioSource.VOICE_RECOGNITION, MediaRecorder.AudioSource.MIC,
+            MediaRecorder.AudioSource.DEFAULT};
     private static final int[] RATES = {16000, 48000, 44100};
 
     private static String sourceName(int s) {
-        return s == MediaRecorder.AudioSource.VOICE_COMMUNICATION ? "voice path" : s == MediaRecorder.AudioSource.MIC ? "microphone" : "default input";
+        return s == MediaRecorder.AudioSource.VOICE_COMMUNICATION ? "voice path"
+                : s == MediaRecorder.AudioSource.VOICE_RECOGNITION ? "voice recognition input"
+                : s == MediaRecorder.AudioSource.MIC ? "microphone" : "default input";
     }
 
     /** An input that gives sound, with Android's echo canceller, noise suppressor and gain control where it has them. */
-    private static final class Input {
+    static final class Input {
         final AudioRecord rec;
         final int source, rate;
         final short[] raw;
@@ -186,20 +191,28 @@ final class Mic implements Voice.Uplink {
     }
 
     /** The first input that opens, records and gives a part of sound within half a second; null when none does. */
-    private static Input open() {
+    static Input open() { return open(false); }
+
+    /**
+     * The same for the wake word (`wake`): the voice recognition input without Android's effects first, as the wake word
+     * models were trained on plain sound and Home Assistant cleans up the question itself.
+     */
+    static Input open(boolean wake) {
         java.util.List<int[]> tries = new java.util.ArrayList<int[]>();
-        int[] last = good;
+        int[] last = wake ? goodWake : good;
         if (last != null) tries.add(last);
         // With Android's echo canceller, noise suppressor and gain control first; then without them, which some drivers
-        // can't take on a recording (it opens and never gives a sample).
-        for (int effects = 1; effects >= 0; effects--)
-            for (int rate : RATES) for (int source : SOURCES) tries.add(new int[]{source, rate, effects});
-        App.get().log("voice: finding the microphone (Android " + android.os.Build.VERSION.RELEASE + ", "
-                + android.os.Build.MANUFACTURER + " " + android.os.Build.MODEL + ")");
+        // can't take on a recording (it opens and never gives a sample). The wake word the other way round.
+        for (int e = 0; e < 2; e++) {
+            int effects = wake ? e : 1 - e;
+            for (int rate : RATES) for (int source : wake ? WAKE_SOURCES : SOURCES) tries.add(new int[]{source, rate, effects});
+        }
+        App.get().log("voice: finding the microphone" + (wake ? " for the wake word" : "") + " (Android "
+                + android.os.Build.VERSION.RELEASE + ", " + android.os.Build.MANUFACTURER + " " + android.os.Build.MODEL + ")");
         for (int[] t : tries) {
             Input in = tryInput(t[0], t[1], t[2] == 1);
             if (in != null) {
-                good = t;
+                if (wake) goodWake = t; else good = t;
                 App.get().log("voice: " + sourceName(t[0]) + " at " + t[1] + " Hz"
                         + (t[2] == 1 ? "" : ", without Android's voice effects")
                         + (in.aec != null ? ", echo cancelling" : "") + (in.ns != null ? ", noise suppression" : ""));
@@ -258,6 +271,7 @@ final class Mic implements Voice.Uplink {
         Input mic = null;
         int ended = Voice.FAILED;
         App.get().holdSpeaker(true);
+        App.get().takeMicrophone(true);
         try {
             URI u = new URI(url);
             String host = u.getHost();
@@ -362,6 +376,7 @@ final class Mic implements Voice.Uplink {
             level = 0;
             state = stopping ? Voice.OFF : ended;
             App.get().holdSpeaker(false);
+            App.get().takeMicrophone(false);
         }
     }
 

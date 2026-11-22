@@ -50,6 +50,40 @@ The ESPHome native API and its Noise encryption (Noise_NNpsk0_25519_ChaChaPoly_S
 public descriptions. X25519 follows TweetNaCl (public domain) and RFC 7748; ChaCha20-Poly1305 follows RFC 8439, with
 Poly1305 after poly1305-donna (public domain).
 
+The wake word
+-------------
+
+assets/wake/*.tflite: the microWakeWord models okay_nabu, hey_jarvis, hey_mycroft and vad (v2) from ESPHome's
+micro_wake_word model collection (https://github.com/esphome/micro-wake-word-models), unchanged:
+  ESPHome micro_wake_word Model Collection. Copyright 2024-2026 Open Home Foundation. This product includes software
+  and model files developed by the Open Home Foundation (https://www.openhomefoundation.org/). Licensed under the
+  Apache License, Version 2.0 (http://www.apache.org/licenses/LICENSE-2.0), which covers the trained model weights
+  and their manifests.
+
+core/MicroFrontend.java and core/MicroTables.java are a Java port of TensorFlow Lite Micro's audio microfrontend
+(tensorflow/lite/experimental/microfrontend), Copyright The TensorFlow Authors, Apache License 2.0, and of the 16-bit
+fixed-point FFT of kissfft v1.3.0, Copyright (c) 2003-2010 Mark Borgerding, BSD 3-Clause License:
+
+    Redistribution and use in source and binary forms, with or without modification, are permitted provided that the
+    following conditions are met: Redistributions of source code must retain the above copyright notice, this list of
+    conditions and the following disclaimer. Redistributions in binary form must reproduce the above copyright notice,
+    this list of conditions and the following disclaimer in the documentation and/or other materials provided with
+    the distribution. Neither the author nor the names of any contributors may be used to endorse or promote products
+    derived from this software without specific prior written permission. THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT
+    HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+    WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+    (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR
+    BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+    TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+    POSSIBILITY OF SUCH DAMAGE.
+
+core/MicroModel.java runs those models with a Java port of TensorFlow Lite Micro's reference integer kernels and the
+fixed-point logistic of gemmlowp (https://github.com/google/gemmlowp), Copyright The TensorFlow Authors and Google
+Inc., Apache License 2.0. core/WakeWord.java follows ESPHome's micro_wake_word (streaming_model.cpp,
+micro_wake_word.cpp; https://github.com/esphome/esphome), Copyright (c) 2019 ESPHome, whose C++ is licensed under the
+GNU General Public License v3.0 (compatible with this project's AGPL v3): its detection rules and feature scaling.
+
 Fonts and icons
 ---------------
 
@@ -59,9 +93,11 @@ font is distributed under the Apache License 2.0. See assets/MDI-LICENSE.
 Tessera plugins (ported to Java)
 --------------------------------
 
-Flip clock, Tap sound and Waste collection (https://github.com/MaxGramser/tessera-plugins)
+Flip clock, Tap sound, Waste collection and Voice assistant (https://github.com/MaxGramser/tessera-plugins)
   Copyright (c) 2026 Max Gramser. MIT License. Tap sound's two sounds (assets/tap.wav, assets/step.wav) are the
   plugin's own files.
+  Voice assistant's two sounds (assets/assist_wake.ogg, assets/assist_thinking.ogg) are its wake.wav and
+  thinking.wav, made smaller (22 kHz mono Ogg Vorbis).
 
 Thermo dial (https://github.com/alexcoscia/tessera-thermo-dial, as listed in Tessera's plugin index)
   Copyright (c) 2026 Alex Coscia. MIT License.

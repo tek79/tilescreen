@@ -40,7 +40,7 @@ final class SettingsPage {
     }
 
     static final String MENU = "", LIGHT = "light", NIGHT = "night", SCREEN = "screen", ABOUT = "about";
-    private static final int TOGGLE = 0, NUMBER = 1, DURATION = 2, MOMENT = 3, ROTATION = 4, INFO = 5, ACTION = 6;
+    private static final int TOGGLE = 0, NUMBER = 1, DURATION = 2, MOMENT = 3, ROTATION = 4, INFO = 5, ACTION = 6, CHOICE = 7;
 
     private final TextPaint text = new TextPaint(Paint.ANTI_ALIAS_FLAG);
     private final TextPaint glyphs;
@@ -68,6 +68,7 @@ final class SettingsPage {
         String value;     // an info row's words
         Runnable action;  // an action row's deed
         String again;     // what an action row says before it runs
+        String[] options; // a choice row's, by the setting's value (a tap moves to the next)
     }
 
     private static Row row(int kind, String label, String key) {
@@ -143,6 +144,26 @@ final class SettingsPage {
             // The settings of the plugins this app draws (tap_sound, waste_collection).
             out.add(row(TOGGLE, "Tap sound", "tap_sound"));
             out.add(row(TOGGLE, "Waste in top bar", "waste_in_bar"));
+            // The voice assistant's (voice_assist), where the tablet has one.
+            if (App.get().screen().assist != null) {
+                out.add(row(TOGGLE, "Wake word", "assist_wake_word"));
+                Row phrase = row(CHOICE, "Wake phrase", "assist_wake_phrase");
+                phrase.options = app.tilescreen.core.WakeWord.PHRASES;
+                out.add(phrase);
+                out.add(row(TOGGLE, "Wake sound", "assist_wake_sound"));
+                out.add(row(TOGGLE, "Thinking sound", "assist_thinking_sound"));
+                out.add(row(TOGGLE, "Show popup", "assist_show_popup"));
+                Row ask = row(ACTION, "Ask the assistant", null);
+                ask.icon = "robot";
+                ask.action = new Runnable() {
+                    public void run() {
+                        host.close();
+                        app.tilescreen.core.Assist a = App.get().screen().assist;
+                        if (a != null) a.ask();
+                    }
+                };
+                out.add(ask);
+            }
             out.add(number("Waste days ahead", "waste_days_ahead", 0, 3, 1, ""));
             out.add(row(ROTATION, "Rotation", "rotation"));
         } else if (g.equals(ABOUT)) {
@@ -231,6 +252,12 @@ final class SettingsPage {
         text.setTextAlign(a);
         c.drawText(s, x, baseline, text);
         text.setTextAlign(Paint.Align.LEFT);
+    }
+
+    private float measure(String s, float size) {
+        text.setTypeface(medium);
+        text.setTextSize(size);
+        return text.measureText(s);
     }
 
     private String fit(String s, float w, float size, Typeface f) {
@@ -371,6 +398,17 @@ final class SettingsPage {
                 c.drawCircle(on ? track.right - sh / 2 : track.left + sh / 2, track.centerY(), knob, fill);
                 if (r.enabled) hits.tap(band, new Runnable() {
                     public void run() { s.set(r.key, on ? 0 : 1); }
+                });
+            } else if (r.kind == CHOICE) {
+                final int v = Math.max(0, Math.min(r.options.length - 1, s.get(r.key)));
+                String text = r.options[v];
+                float chh = 7.5f * u;
+                float cwid = Math.max(24 * u, measure(text, fs * 0.9f) + 8 * u);
+                RectF chip = new RectF(band.right - cwid, band.centerY() - chh / 2, band.right, band.centerY() + chh / 2);
+                pill(c, chip, Style.RAISED);
+                words(c, text, chip.centerX(), chip.centerY() + fs * 0.33f, fs * 0.9f, Style.TEXT, medium, Paint.Align.CENTER);
+                if (r.enabled) hits.tap(band, new Runnable() {
+                    public void run() { s.set(r.key, (v + 1) % r.options.length); }
                 });
             } else if (r.kind == ROTATION) {
                 final int turn = s.get("rotation");

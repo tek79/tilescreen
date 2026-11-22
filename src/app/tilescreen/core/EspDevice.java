@@ -37,7 +37,10 @@ public final class EspDevice {
             SET_KEY_REQ = 124, SET_KEY_RESP = 125,
             LIST_SELECT = 52, SELECT_STATE = 53, SELECT_CMD = 54, LIST_BUTTON = 61, BUTTON_CMD = 62,
             LIST_TIME = 103, TIME_STATE = 104, TIME_CMD = 105,
-            LIST_MEDIA_PLAYER = 63, MEDIA_PLAYER_STATE = 64, MEDIA_PLAYER_CMD = 65;
+            LIST_MEDIA_PLAYER = 63, MEDIA_PLAYER_STATE = 64, MEDIA_PLAYER_CMD = 65,
+            // ESPHome's voice assistant (api.proto): Home Assistant's Assist pipeline with this screen as its satellite.
+            VA_SUBSCRIBE = 89, VA_REQUEST = 90, VA_RESPONSE = 91, VA_EVENT = 92, VA_AUDIO = 106,
+            VA_ANNOUNCE = 119, VA_ANNOUNCE_FINISHED = 120, VA_CONFIG_REQ = 121, VA_CONFIG_RESP = 122, VA_SET_CONFIG = 123;
 
     public static final int API_MAJOR = 1, API_MINOR = 12;
     public static final String ESPHOME_VERSION = "2026.5.1";
@@ -323,8 +326,12 @@ public final class EspDevice {
     /**
      * ESPHome's media player (api.proto ListEntitiesMediaPlayerResponse, MediaPlayerStateResponse,
      * MediaPlayerCommandRequest), as a Tessera P4 screen has it ("Media Player", packages/features/audio-player.yaml):
-     * Home Assistant plays a link on it, announces on it and sets its volume. No supported formats are named, so Home
-     * Assistant hands over the link as it is and the tablet's own decoders play it, with no proxy transcoding it.
+     * Home Assistant plays a link on it, announces on it and sets its volume.
+     *
+     * It names MP3 as its format (MediaPlayerSupportedFormat), for music and for announcements, as a P4 screen names FLAC:
+     * Home Assistant then sends every link in it (its proxy turns other media into it), and Assist's spoken answer comes
+     * as MP3 too. Left to itself Assist streams a WAV whose header can't know its length, which Android's player refuses
+     * (error 1/-2147483648); a streamed MP3 it plays on every Android.
      */
     public static final class MediaPlayer extends Entity {
         public static final int IDLE = 1, PLAYING = 2, PAUSED = 3, ANNOUNCING = 4;
@@ -350,6 +357,9 @@ public final class EspDevice {
 
         public MediaPlayer(String objectId, String name) { super(objectId, name); }
 
+        /** IDLE, PLAYING, PAUSED or ANNOUNCING, as it was said last. */
+        public int playerState() { return playerState; }
+
         public void set(int state, float volume, boolean muted) {
             this.playerState = state;
             this.volume = volume;
@@ -360,8 +370,11 @@ public final class EspDevice {
         int listType() { return LIST_MEDIA_PLAYER; }
 
         Pb.Out describe() {
+            // Music in stereo at 44.1 kHz; an announcement (a spoken answer, a chime) in mono at 22.05 kHz.
+            Pb.Out music = new Pb.Out().string(1, "mp3").varint(2, 44100).varint(3, 2).varint(4, 0).varint(5, 2);
+            Pb.Out announce = new Pb.Out().string(1, "mp3").varint(2, 22050).varint(3, 1).varint(4, 1).varint(5, 2);
             return new Pb.Out().string(1, objectId).key(2, key()).string(3, name).string(5, icon).varint(7, category)
-                    .bool(8, true).varint(11, FEATURES);
+                    .bool(8, true).message(9, music).message(9, announce).varint(11, FEATURES);
         }
 
         int stateType() { return MEDIA_PLAYER_STATE; }
@@ -450,6 +463,96 @@ public final class EspDevice {
     private final List<Entity> entities = new ArrayList<Entity>();
     private final List<Action> actions = new ArrayList<Action>();
     private final List<Conn> conns = new CopyOnWriteArrayList<Conn>();
+
+    // ----- the voice assistant (ESPHome's voice_assistant, docs: Tessera's voice_assist plugin) -----
+
+    /**
+     * Home Assistant's VoiceAssistantFeature bits this screen says it has (DeviceInfoResponse 17): VOICE_ASSISTANT 1,
+     * API_AUDIO 4 (its microphone goes over this connection), ANNOUNCE 16 (assist_satellite.announce); the answer is a
+     * link the media player plays. 0 for a screen without a microphone: Home Assistant then makes no satellite of it.
+     */
+    public volatile int voiceFeatures;
+
+    public interface VoiceListener {
+        /** Home Assistant's answer to a start: port 0 with API audio, or `error` when it can't run Assist now. */
+        void response(boolean error);
+        /** A pipeline event (VoiceAssistantEvent: RUN_START 1 ... ERROR 0, INTENT_PROGRESS 100) and its data. */
+        void event(int type, Map<String, String> data);
+        /** assist_satellite.announce: play `preannounce` then `media`; finished() says it played. */
+        void announce(String media, String text, String preannounce);
+        /** Home Assistant took or let go of this screen as its satellite. */
+        void subscribed(boolean on);
+    }
+
+    public volatile VoiceListener voiceListener;
+    private volatile Conn voiceConn;
+
+    /** Whether Home Assistant listens to this screen's voice assistant now. */
+    public boolean voiceReady() { return voiceConn != null; }
+
+    /**
+     * Starts a question (VoiceAssistantRequest start), after a tap or the wake word (`wakePhrase`, else empty): Home
+     * Assistant listens for the end of speech itself (USE_VAD), with
+     * the audio settings Tessera's voice_assist plugin gives ESPHome's (noise suppression 2, auto gain 31 dBFS, volume
+     * twice). False when no Home Assistant takes the voice assistant now.
+     */
+    public boolean voiceStart(String conversationId, String wakePhrase) {
+        Conn c = voiceConn;
+        if (c == null) return false;
+        Pb.Out audio = new Pb.Out().varint(1, 2).varint(2, 31).flt(3, 2.0f);
+        Pb.Out m = new Pb.Out().bool(1, true).string(2, conversationId == null ? "" : conversationId).varint(3, 1)
+                .message(4, audio);
+        // The phrase that woke the screen (wake_word_phrase): Home Assistant shows it in the pipeline's run.
+        if (wakePhrase != null && !wakePhrase.isEmpty()) m.string(5, wakePhrase);
+        voiceSend(c, VA_REQUEST, m);
+        return true;
+    }
+
+    /** The wake words the screen carries, {id, phrase} (VoiceAssistantConfigurationResponse); none without. */
+    public volatile String[][] wakeWords = new String[0][];
+    /** The id of the one that listens. */
+    public volatile String activeWakeWord = "";
+
+    public interface WakeWordChoice { void chose(String id); }
+
+    /** Home Assistant chose another wake word for the screen. */
+    public volatile WakeWordChoice wakeWordChoice;
+
+    /** Stops a question (VoiceAssistantRequest without start). */
+    public void voiceStop() {
+        Conn c = voiceConn;
+        if (c != null) voiceSend(c, VA_REQUEST, new Pb.Out().bool(1, false));
+    }
+
+    /** A piece of the microphone, 16 kHz 16-bit mono (VoiceAssistantAudio); `end` after the last. */
+    public void voiceAudio(byte[] data, boolean end) {
+        Conn c = voiceConn;
+        if (c == null) return;
+        Pb.Out m = new Pb.Out();
+        if (data != null && data.length > 0) m.bytes(1, data);
+        if (end) m.bool(2, true);
+        voiceSend(c, VA_AUDIO, m);
+    }
+
+    /** assist_satellite.announce played (VoiceAssistantAnnounceFinished). */
+    public void announceFinished(boolean ok) {
+        Conn c = voiceConn;
+        if (c != null) voiceSend(c, VA_ANNOUNCE_FINISHED, new Pb.Out().bool(1, ok));
+    }
+
+    /**
+     * The voice assistant's messages start on any thread, Android's main one too (a tap on the popup's close key), which
+     * may not touch a socket: they go out on the writer, in order.
+     */
+    private void voiceSend(final Conn c, final int type, final Pb.Out m) {
+        try {
+            writer.execute(new Runnable() {
+                public void run() { c.send(type, m); }
+            });
+        } catch (java.util.concurrent.RejectedExecutionException stopped) {
+            // the server stopped: nobody to tell
+        }
+    }
     private volatile ServerSocket server;
     private volatile boolean running;
     private volatile Runnable onClients;
@@ -695,6 +798,11 @@ public final class EspDevice {
             } finally {
                 close();
                 conns.remove(this);
+                if (voiceConn == this) {
+                    voiceConn = null;
+                    VoiceListener l = voiceListener;
+                    if (l != null) l.subscribed(false);
+                }
                 log.log("client gone: " + peer);
                 changed();
             }
@@ -744,7 +852,8 @@ public final class EspDevice {
                             .string(5, "tilescreen").string(6, info.model).string(8, info.projectName)
                             .string(9, info.projectVersion).string(12, info.manufacturer)
                             .string(13, info.friendlyName).string(16, info.suggestedArea)
-                            .bool(19, true).bool(26, key == null));
+                            .bool(19, true).bool(26, key == null)
+                            .varint(17, voiceFeatures));
                     return true;
                 case LIST_ENTITIES_REQ: {
                     List<Entity> es;
@@ -809,6 +918,60 @@ public final class EspDevice {
                     Pb.Field kf = Pb.first(f, 1);
                     boolean ok = setKeyFromHomeAssistant(kf == null ? "" : kf.text(), noise != null);
                     send(SET_KEY_RESP, new Pb.Out().bool(1, ok));
+                    return true;
+                }
+                case VA_SUBSCRIBE: {
+                    Pb.Field on = Pb.first(f, 1);
+                    boolean subscribe = on != null && on.varint != 0;
+                    if (subscribe) voiceConn = this;
+                    else if (voiceConn == this) voiceConn = null;
+                    log.log(peer + (subscribe ? " takes this screen as its voice assistant" : " lets go of the voice assistant"));
+                    VoiceListener l = voiceListener;
+                    if (l != null) l.subscribed(voiceConn != null);
+                    return true;
+                }
+                case VA_CONFIG_REQ: {
+                    // The wake words the screen carries and the one that listens (voice_assistant get_configuration):
+                    // Home Assistant offers them as the satellite's wake word.
+                    Pb.Out m = new Pb.Out();
+                    String[][] words = wakeWords;
+                    for (String[] w : words) m.message(1, new Pb.Out().string(1, w[0]).string(2, w[1]).string(3, "en"));
+                    String active = activeWakeWord;
+                    if (words.length > 0 && !active.isEmpty()) m.string(2, active);
+                    send(VA_CONFIG_RESP, m.varint(3, words.length > 0 ? 1 : 0));
+                    return true;
+                }
+                case VA_SET_CONFIG: {
+                    // Home Assistant chose the satellite's wake word (on_set_configuration).
+                    Pb.Field id = Pb.first(f, 1);
+                    WakeWordChoice c = wakeWordChoice;
+                    if (id != null && c != null && !id.text().isEmpty()) c.chose(id.text());
+                    return true;
+                }
+                case VA_RESPONSE: {
+                    Pb.Field error = Pb.first(f, 2);
+                    VoiceListener l = voiceListener;
+                    if (l != null) l.response(error != null && error.varint != 0);
+                    return true;
+                }
+                case VA_EVENT: {
+                    Pb.Field t = Pb.first(f, 1);
+                    Map<String, String> data = new java.util.LinkedHashMap<String, String>();
+                    for (Pb.Field d : f) {
+                        if (d.number != 2 || d.data == null) continue;
+                        List<Pb.Field> kv = Pb.parse(d.data);
+                        Pb.Field name = Pb.first(kv, 1), value = Pb.first(kv, 2);
+                        if (name != null) data.put(name.text(), value == null ? "" : value.text());
+                    }
+                    VoiceListener l = voiceListener;
+                    if (l != null) l.event(t == null ? 0 : (int) t.varint, data);
+                    return true;
+                }
+                case VA_ANNOUNCE: {
+                    Pb.Field media = Pb.first(f, 1), text = Pb.first(f, 2), pre = Pb.first(f, 3);
+                    VoiceListener l = voiceListener;
+                    if (l != null) l.announce(media == null ? "" : media.text(), text == null ? "" : text.text(), pre == null ? "" : pre.text());
+                    else send(VA_ANNOUNCE_FINISHED, new Pb.Out().bool(1, false));
                     return true;
                 }
                 default:

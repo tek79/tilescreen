@@ -347,6 +347,44 @@ public final class Screen {
         device.callHomeAssistant("esphome.screen_call", data, null, true);
     }
 
+    /** Home Assistant's Assist on the screen, by tap or wake word; null until the app found a microphone (enableVoice). */
+    public volatile Assist assist;
+
+    /**
+     * The tablet has a microphone that gives sound: it says so to Home Assistant (a voice satellite: VOICE_ASSISTANT,
+     * API_AUDIO, ANNOUNCE, with the three wake words), gets the assistant's settings and its Assistant. Not SPEAKER: that would have Home Assistant
+     * stream raw WAV down for a speaker of its own; the answer plays on the media player instead, as on a Tessera P4
+     * screen, in the media player's announcement format (MP3).
+     */
+    public synchronized Assist enableVoice() {
+        if (assist != null) return assist;
+        screenSettings.voiceToggles(device);
+        device.voiceFeatures = 1 | 4 | 16;
+        // The wake words, offered to Home Assistant as the satellite's (one listens: Wake phrase).
+        String[][] words = new String[WakeWord.IDS.length][];
+        for (int i = 0; i < words.length; i++) words[i] = new String[]{WakeWord.IDS[i], WakeWord.PHRASES[i]};
+        device.wakeWords = words;
+        device.activeWakeWord = WakeWord.IDS[screenSettings.assistWakePhrase()];
+        device.wakeWordChoice = new EspDevice.WakeWordChoice() {
+            public void chose(String id) {
+                int i = java.util.Arrays.asList(WakeWord.IDS).indexOf(id);
+                if (i >= 0) screenSettings.set("assist_wake_phrase", i);
+            }
+        };
+        screenSettings.onWake = new Runnable() {
+            public void run() {
+                device.activeWakeWord = WakeWord.IDS[screenSettings.assistWakePhrase()];
+                Runnable w = onWakeChanged;
+                if (w != null) w.run();
+            }
+        };
+        assist = new Assist(device, mediaPlayer, screenSettings, log);
+        return assist;
+    }
+
+    /** The app's: Wake word or Wake phrase changed. */
+    public volatile Runnable onWakeChanged;
+
     /** This screen's own name in the list of screens: a call never lists the tablet itself. */
     public String node() { return settings.node; }
 

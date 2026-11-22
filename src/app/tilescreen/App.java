@@ -307,6 +307,22 @@ public final class App extends Application {
 
     public int portraitRows() { return Math.max(1, Math.min(8, prefs.getInt("p_rows", columns()))); }
 
+    private volatile WakeListener wake;
+    private volatile boolean visible = true;
+
+    /** A call or the doorbell's Talk takes the microphone from the wake word, and gives it back. */
+    public void takeMicrophone(boolean on) {
+        WakeListener w = wake;
+        if (w != null) w.take(on);
+    }
+
+    /** The app is on the glass, or another app (or Android's screensaver) is in front: the wake word rests then. */
+    public void visible(boolean on) {
+        visible = on;
+        WakeListener w = wake;
+        if (w != null) w.visible(on);
+    }
+
     /** A call or the doorbell's voice takes the speaker from the music, and gives it back (Player.hold). */
     public void holdSpeaker(boolean on) {
         Player p = player;
@@ -359,6 +375,24 @@ public final class App extends Application {
         app.tilescreen.core.Tessera.hasMicrophone = mic;
         app.tilescreen.core.Tessera.echoCancel = mic && Mic.echoCanceller();
         app.tilescreen.core.Voice.uplink = mic ? new Mic() : null;
+        // Home Assistant's Assist, push to talk, where there is a microphone (Tessera's voice_assist plugin).
+        if (mic) {
+            app.tilescreen.core.Assist assist = made.enableVoice();
+            assist.microphone = new AssistMicrophone();
+            assist.sounds = new app.tilescreen.core.Assist.Sounds() {
+                public void wake() { assistSound(true); }
+                public void thinking() { assistSound(false); }
+            };
+            loadAssistSounds();
+            // The wake word on the tablet (Wake word, Wake phrase): listens while it is on.
+            final WakeListener w = new WakeListener(this, made.device, made.screenSettings, assist);
+            w.visible(visible);
+            wake = w;
+            made.onWakeChanged = new Runnable() {
+                public void run() { w.update(); }
+            };
+            w.update();
+        }
         log("sound: speaker" + (mic ? ", microphone" + (app.tilescreen.core.Tessera.echoCancel ? " with echo cancelling" : "") : ", no microphone"));
         // The battery's sensors before Home Assistant lists the entities.
         battery(registerReceiver(null, new android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED)));
@@ -444,6 +478,9 @@ public final class App extends Application {
 
     private synchronized void stopScreen() {
         main.removeCallbacks(ipCheck);
+        WakeListener w = wake;
+        wake = null;
+        if (w != null) w.close();
         if (mdns != null) mdns.stop();
         mdns = null;
         if (screen != null) screen.stop();
@@ -599,6 +636,122 @@ public final class App extends Application {
         Tessera.hasBattery = true;
         Tessera.batteryLevel = Math.round(level * 100f / scale);
         s.battery(Math.round(level * 100f / scale), state, charger);
+    }
+
+    // ----- the voice assistant's microphone and sounds (Assist) -----
+
+    /**
+     * The microphone for a question: the wake word's recording while it listens (one recording for both, as on a
+     * Tessera screen), else the input Mic finds; 20 ms parts at 16 kHz, on a thread of its own.
+     */
+    private final class AssistMicrophone implements app.tilescreen.core.Assist.Microphone {
+        private volatile boolean on;
+        private Thread worker;
+        private boolean shared;
+
+        public synchronized boolean start(final app.tilescreen.core.Assist.Sink sink) {
+            stop();
+            WakeListener w = wake;
+            if (w != null && w.attach(sink)) {
+                shared = true;
+                holdSpeaker(true);
+                return true;
+            }
+            on = true;
+            final Mic.Input[] opened = new Mic.Input[1];
+            final Object ready = new Object();
+            final boolean[] tried = {false};
+            worker = new Thread(new Runnable() {
+                public void run() {
+                    Mic.Input in = Mic.open();
+                    synchronized (ready) {
+                        opened[0] = in;
+                        tried[0] = true;
+                        ready.notifyAll();
+                    }
+                    if (in == null) return;
+                    holdSpeaker(true);
+                    try {
+                        byte[] part = new byte[Mic.PART];
+                        while (on && in.read(part)) sink.part(part.clone());
+                    } finally {
+                        in.close();
+                        holdSpeaker(false);
+                    }
+                }
+            }, "assist-mic");
+            worker.start();
+            synchronized (ready) {
+                long until = System.currentTimeMillis() + 12000;
+                while (!tried[0] && System.currentTimeMillis() < until) {
+                    try { ready.wait(200); } catch (InterruptedException e) { break; }
+                }
+            }
+            return opened[0] != null;
+        }
+
+        public synchronized void stop() {
+            on = false;
+            worker = null;
+            if (shared) {
+                shared = false;
+                WakeListener w = wake;
+                if (w != null) w.detach();
+                holdSpeaker(false);
+            }
+        }
+    }
+
+    private android.media.SoundPool assistSounds;
+    private int wakeSound, thinkingSound;
+    /** Which of the two have loaded; a sound asked for before it loaded plays once it has. */
+    private final java.util.Set<Integer> loadedSounds = new java.util.HashSet<Integer>();
+    private int pendingSound;
+
+    /**
+     * Loads the two sounds ahead (SoundPool loads in the background, and a sound played before it loaded is silently
+     * dropped: the first wake sound after a start was never heard).
+     */
+    synchronized void loadAssistSounds() {
+        if (assistSounds != null) return;
+        try {
+            assistSounds = new android.media.SoundPool(2, android.media.AudioManager.STREAM_MUSIC, 0);
+            assistSounds.setOnLoadCompleteListener(new android.media.SoundPool.OnLoadCompleteListener() {
+                public void onLoadComplete(android.media.SoundPool pool, int id, int status) {
+                    synchronized (App.this) {
+                        if (status != 0) {
+                            log("assist: a sound didn't load (" + status + ")");
+                            return;
+                        }
+                        loadedSounds.add(id);
+                        if (pendingSound == id) {
+                            pendingSound = 0;
+                            pool.play(id, 0.8f, 0.8f, 1, 0, 1f);
+                        }
+                    }
+                }
+            });
+            wakeSound = assistSounds.load(getAssets().openFd("assist_wake.ogg"), 1);
+            thinkingSound = assistSounds.load(getAssets().openFd("assist_thinking.ogg"), 1);
+        } catch (Exception e) {
+            log("assist: sound: " + e);
+        }
+    }
+
+    /** The voice assistant's wake sound, or its thinking sound, on the media stream (the answer's volume). */
+    synchronized void assistSound(boolean wake) {
+        try {
+            loadAssistSounds();
+            if (assistSounds == null) return;
+            int id = wake ? wakeSound : thinkingSound;
+            if (!loadedSounds.contains(id)) {
+                pendingSound = id;
+                return;
+            }
+            if (assistSounds.play(id, 0.8f, 0.8f, 1, 0, 1f) == 0) log("assist: Android didn't play the " + (wake ? "wake" : "thinking") + " sound");
+        } catch (Exception e) {
+            log("assist: sound: " + e);
+        }
     }
 
     // ----- Tap sound's two sounds (assets tap.wav and step.wav, from the plugin), on the system sound stream -----

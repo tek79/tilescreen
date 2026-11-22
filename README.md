@@ -19,7 +19,7 @@ and eventually freezes.
 
 Tile Screen avoids all of that. It has no web view, no browser and no Home Assistant app inside it. It is a small
 native app with no libraries beyond the Android framework, and it draws Tessera's tiles itself with Android's canvas.
-The APK is under 1 MB, and it runs on a 5th-gen Fire 7.
+The APK is about 1.1 MB, and it runs on a 5th-gen Fire 7.
 
 It also suits people who already use Tessera on ESP32 panels and want a tablet or two to join them. Every screen is
 then laid out in one place.
@@ -28,8 +28,8 @@ then laid out in one place.
 
 - Tessera's tiles and cards, drawn the way its firmware draws them:
   - lights (with color and effects), switches, covers, climate, media players (with their library and favorites),
-    sensors with history graphs and meters, calendars, weather, the clock tile, the energy flow card, cameras (live streaming), the doorbell, light presets, template tiles, and Tessera plugins (flip clock, tap sound, waste collection, thermo dial, AV wall panel controls),
-    robot vacuums (map, cleaning by room, routines, suction and mop), alerts and more;
+    sensors with history graphs and meters, calendars, weather, the clock tile, the energy flow card, cameras (live streaming), the doorbell, light presets, template tiles, and Tessera plugins (flip clock, tap sound, waste collection, thermo dial, AV wall panel controls, voice assistant),
+    robot vacuums (map, cleaning by room, routines, suction and mop), alarm panels with a keypad, alerts and more;
   - the screensaver with Tessera's clock faces;
   - the on-screen settings page.
 - Tessera's screen settings (brightness, standby, night mode and the rest) as ordinary entities in Home Assistant.
@@ -40,8 +40,11 @@ then laid out in one place.
   Android's apps and its own launcher. Home Assistant can switch between the tiles, the widget page and Android with
   the screen's **Showing** select.
 - A **Next alarm** sensor in Home Assistant, like the Home Assistant app's, from the tablet's alarm clock.
+- Sound, as on Tessera's ESP32-P4 screens: a **media player** for text to speech and music, **Talk** to the doorbell,
+  **calls between screens**, and Home Assistant's **Assist** with a **wake word heard on the tablet itself** (on a tablet
+  with a microphone).
 
-**Plugins:** Tile Screen carries its own versions of five Tessera plugins (see the guide). Any other plugin's tile shows its name and "Plugin missing".
+**Plugins:** Tile Screen carries its own versions of six Tessera plugins (see the guide). Any other plugin's tile shows its name and "Plugin missing".
 
 ## Compatibility
 
@@ -50,7 +53,7 @@ then laid out in one place.
 | **Android** | 4.2 (API 17) or later. Built for and tested on Android 5–7 era devices; see the guide for what Android 4 lacks. |
 | **Tested on** | Amazon Fire 7 (5th gen, 2015) running LineageOS 14.1, rooted with Magisk. |
 | | Amazon Fire 10 (7th gen, 2017) running LineageOS 14.1, rooted with Magisk. |
-| | Amazon Fire 8 (8th gen, 2018) running LineageOS 20, rooted with Magisk. |
+| | Amazon Fire 8 (8th gen, 2018) running LineageOS 16, rooted with Magisk. |
 | | Amazon Echo Show 5 (1st gen, 2019) running LineageOS 18.1, rooted with Magisk. |
 | | Samsung Galaxy Tab E (SM-T560NU, 2015) running LineageOS 20, rooted with Magisk. |
 | | Asus ZenPad 8.0 (Z380M) running Android 7.0. |
@@ -59,7 +62,7 @@ then laid out in one place.
 | **Should work on** | Most Android tablets and phones. Landscape is the default; portrait is supported. |
 | **Memory** | Designed for 1 GB of RAM and less. |
 | **Home Assistant** | Any recent version with the ESPHome integration. |
-| **Tessera** | The ESP Screen Manager add-on (screen protocol v2). The tablet reports firmware **0.57.0**, the version whose features it draws. |
+| **Tessera** | The ESP Screen Manager add-on (screen protocol v2). The tablet reports firmware **0.58.0**, the version whose features it draws. |
 | **Root** | Optional (see the next section). |
 
 Tile Screen is not on the Play Store. You sideload the APK.
@@ -78,7 +81,7 @@ harmlessly.
 Tile Screen works fully without root. On a rooted tablet (Magisk, for example), the app asks for root **once**,
 the first time it needs it, and Magisk shows its usual prompt. You can deny it.
 
-Root is used for three things:
+Root is used for four things:
 
 1. **Turning the backlight fully off.** Without root, Android can only set the screen to its dimmest level. That isn't
    dark, and on many tablets it is quite bright. With root, the app writes the brightness straight to the backlight
@@ -89,10 +92,13 @@ Root is used for three things:
    the screen off with `input keyevent 223`.
 3. **Diagnostics.** When something keeps the screen from sleeping, the app reads `dumpsys power` and writes the
    relevant lines (wake locks, Stay awake, screensaver settings) to its log.
+4. **Adding widgets.** The first time you add a widget to the widget page, the app grants itself Android's permission to
+   place widgets (`appwidget grantbind`), as tapping *Always allow* would. Without root, Android asks instead.
 
 Root is never used for anything else. The app doesn't install anything, change system files, or run commands
-it gets from the network. Every root command is in [`Root.java`](src/app/tilescreen/Root.java) and
-[`MainActivity.java`](src/app/tilescreen/MainActivity.java).
+it gets from the network. Every root command is in [`Root.java`](src/app/tilescreen/Root.java),
+[`MainActivity.java`](src/app/tilescreen/MainActivity.java) and [`WidgetPage.java`](src/app/tilescreen/WidgetPage.java).
+The microphone needs no root.
 
 ### Other Android permissions
 
@@ -102,6 +108,17 @@ it gets from the network. Every root command is in [`Root.java`](src/app/tilescr
 | Wi-Fi multicast | To announce the tablet over mDNS, so Home Assistant discovers it. |
 | Wake lock | To keep the processor and Wi-Fi awake, so Home Assistant can always reach the tablet, and to wake the screen. |
 | Run at startup | To start again after a reboot. |
+| Microphone (record audio) | For the doorbell's Talk, calls between screens and the voice assistant: a question, and the wake word while it is on. Nothing is recorded or kept; the sound goes only where the feature sends it. A tablet without a microphone simply doesn't offer these. |
+| Change audio settings | To switch Android to its call mode with the speakerphone during a call between screens, and back after. |
+
+Android grants these when the app is installed (it doesn't ask at run time). On Android 6 and later you can still turn
+the microphone off in Android's settings for the app; Talk, calls and the assistant then hear silence.
+
+**The microphone is shared.** Android before version 10 lets only one recording use the microphone at a time. With the
+voice assistant's **Wake word** on, Tile Screen holds the microphone the whole time its tiles are on the glass, so other
+apps on the tablet (another voice assistant, a recorder) can't record then. It lets go whenever another app or Android's
+screensaver is in front, and calls and Talk take it over inside the app. Leave Wake word off on a tablet where another
+app needs the microphone. The guide's [Sharing the microphone](docs/GUIDE.md#sharing-the-microphone) has the details.
 
 ## Getting started
 
@@ -146,9 +163,10 @@ The [user guide](docs/GUIDE.md#building-it-yourself) lists them.
 
 ```
 src/app/tilescreen/        Android side: activity, service, root helper, settings dialog
-src/app/tilescreen/core/   plain Java: ESPHome API server, Noise encryption, Tessera receiver, screen settings
+src/app/tilescreen/core/   plain Java: ESPHome API server, Noise encryption, Tessera receiver, screen settings,
+                           the voice assistant and its wake word (audio front end, model runner)
 src/app/tilescreen/ui/     the renderer: tiles, cards, clock faces, energy, meters, calendar, settings page
-assets/                    Material Design Icons font
+assets/                    Material Design Icons font, the sounds, the wake word models (assets/wake)
 test/                      desktop harnesses and stand-ins for Android's drawing classes
 docs/GUIDE.md              the full user guide
 ```
@@ -166,6 +184,7 @@ It is a derivative of:
 
 It also draws on Yuri Gelfand's [EchoLocal](https://github.com/ygelfand/echolocal) and
 [go-esphome-device](https://github.com/ygelfand/go-esphome-device) (MIT). The icons are
-[Material Design Icons](https://pictogrammers.com) (Apache 2.0).
+[Material Design Icons](https://pictogrammers.com) (Apache 2.0). The wake word uses ESPHome's microWakeWord models
+(Apache 2.0) and Java ports of TensorFlow Lite Micro's audio front end and kernels (Apache 2.0) and kissfft (BSD).
 
 [`NOTICE`](NOTICE) lists every credit and licence.
