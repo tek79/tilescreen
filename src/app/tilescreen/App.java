@@ -307,6 +307,71 @@ public final class App extends Application {
 
     public int portraitRows() { return Math.max(1, Math.min(8, prefs.getInt("p_rows", columns()))); }
 
+    private volatile Bluetooth bluetooth;
+    private Runnable bluetoothStatus;
+
+    private void startBluetooth(final Screen made) {
+        boolean usable;
+        try {
+            usable = Bluetooth.usable(this);
+        } catch (Throwable t) {
+            usable = false;
+        }
+        app.tilescreen.core.Tessera.hasBluetooth = usable;
+        if (!usable) {
+            log("bluetooth: this tablet has no Bluetooth LE for the proxy");
+            return;
+        }
+        final app.tilescreen.core.ScreenSettings settings = made.screenSettings;
+        settings.bluetoothToggles(made.device);
+        final app.tilescreen.core.BleProxy proxy = new app.tilescreen.core.BleProxy(new app.tilescreen.core.EspDevice.Logger() {
+            public void log(String line) { App.this.log(line); }
+        });
+        // One radio for the app's life (it listens to Android's Bluetooth broadcasts); a restarted screen takes it over.
+        final Bluetooth radio = bluetooth != null ? bluetooth : new Bluetooth(this);
+        bluetooth = radio;
+        radio.stopScan();
+        radio.setProxy(proxy);
+        proxy.setRadio(radio);
+        made.device.bluetooth = proxy;
+        made.device.bluetoothMac = radio.mac();
+        radio.mode(settings.bluetoothScan());
+        settings.onBluetoothScan = new Runnable() {
+            public void run() { radio.mode(settings.bluetoothScan()); }
+        };
+        applyBluetooth(made, proxy, false);
+        settings.onBluetooth = new Runnable() {
+            public void run() { applyBluetooth(made, proxy, true); }
+        };
+        // Its status, in Tessera's words, every few seconds.
+        if (bluetoothStatus != null) main.removeCallbacks(bluetoothStatus);
+        bluetoothStatus = new Runnable() {
+            public void run() {
+                if (screen != made) return;
+                String text;
+                if (!settings.bluetoothProxy()) text = "Off";
+                else if (proxy.state() == app.tilescreen.core.BleProxy.RUNNING) text = "Listening";
+                else if (!radio.problem().isEmpty()) text = radio.problem();
+                else if (proxy.state() == app.tilescreen.core.BleProxy.STARTING) text = "Starting";
+                else text = "Waiting for Home Assistant";
+                settings.bluetoothStatus(text);
+                main.postDelayed(this, 5000);
+            }
+        };
+        main.post(bluetoothStatus);
+    }
+
+    /** The switch: the features Home Assistant reads, the proxy on or off, and (when it changed) a reconnect to read them. */
+    private void applyBluetooth(Screen made, app.tilescreen.core.BleProxy proxy, boolean changed) {
+        boolean on = made.screenSettings.bluetoothProxy();
+        made.device.bluetoothFeatures = on ? app.tilescreen.core.BleProxy.FEATURES : 0;
+        proxy.enable(on);
+        if (changed) {
+            log("bluetooth: the proxy is " + (on ? "on" : "off") + "; Home Assistant connects again to see it");
+            made.device.reconnectClients();
+        }
+    }
+
     private volatile WakeListener wake;
     private volatile boolean visible = true;
 
@@ -393,6 +458,8 @@ public final class App extends Application {
             };
             w.update();
         }
+        // The Bluetooth proxy (Tessera's bt_proxy), on a tablet with Bluetooth LE: off until its switch is on.
+        startBluetooth(made);
         log("sound: speaker" + (mic ? ", microphone" + (app.tilescreen.core.Tessera.echoCancel ? " with echo cancelling" : "") : ", no microphone"));
         // The battery's sensors before Home Assistant lists the entities.
         battery(registerReceiver(null, new android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED)));
@@ -583,6 +650,77 @@ public final class App extends Application {
         synchronized (lines) {
             return new ArrayList<String>(lines);
         }
+    }
+
+    // ----- export and import of the tablet's settings -----
+
+    /**
+     * Everything this tablet keeps of its own, as one JSON text: the app's settings (name, grid, shape, live tiles, the
+     * widget page, the encryption key and MAC, and the rest of its preferences) and the screen's Tessera settings
+     * (screen-settings.json: brightness, standby, night, the assistant, the Bluetooth proxy). Not the layout: Tessera
+     * sends that again by itself.
+     */
+    String exportSettings() {
+        java.util.Map<String, Object> prefsOut = new java.util.TreeMap<String, Object>();
+        for (java.util.Map.Entry<String, ?> e : prefs.getAll().entrySet()) {
+            Object v = e.getValue();
+            java.util.Map<String, Object> one = new java.util.LinkedHashMap<String, Object>();
+            if (v instanceof Boolean) { one.put("type", "bool"); one.put("value", v); }
+            else if (v instanceof Integer) { one.put("type", "int"); one.put("value", ((Integer) v).doubleValue()); }
+            else if (v instanceof Long) { one.put("type", "long"); one.put("value", String.valueOf(v)); }
+            else if (v instanceof Float) { one.put("type", "float"); one.put("value", ((Float) v).doubleValue()); }
+            else if (v instanceof String) { one.put("type", "string"); one.put("value", v); }
+            else continue; // string sets: none of the app's
+            prefsOut.put(e.getKey(), one);
+        }
+        java.util.Map<String, Object> out = new java.util.LinkedHashMap<String, Object>();
+        out.put("app", "tilescreen");
+        out.put("version", version());
+        out.put("node", node());
+        out.put("exported", new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(new java.util.Date()));
+        out.put("note", "Holds this tablet's encryption key: keep it as you would a password.");
+        out.put("preferences", prefsOut);
+        Object screenSettings = app.tilescreen.core.Json.tryParse(read(new File(getFilesDir(), "screen-settings.json")));
+        if (screenSettings != null) out.put("screen_settings", screenSettings);
+        return app.tilescreen.core.Json.write(out);
+    }
+
+    /** What an export holds, for the question before an import: its node and date; null when it isn't one. */
+    static String describeExport(String text) {
+        java.util.Map<String, Object> m = app.tilescreen.core.Json.obj(app.tilescreen.core.Json.tryParse(text));
+        if (m == null || !"tilescreen".equals(app.tilescreen.core.Json.str(m, "app"))) return null;
+        return app.tilescreen.core.Json.str(m, "node") + ", exported " + app.tilescreen.core.Json.str(m, "exported")
+                + " from Tile Screen " + app.tilescreen.core.Json.str(m, "version");
+    }
+
+    /** Puts an export back: every preference as it was, the screen's settings, then the screen starts again with them. */
+    boolean importSettings(String text) {
+        java.util.Map<String, Object> m = app.tilescreen.core.Json.obj(app.tilescreen.core.Json.tryParse(text));
+        if (m == null || !"tilescreen".equals(app.tilescreen.core.Json.str(m, "app"))) return false;
+        java.util.Map<String, Object> in = app.tilescreen.core.Json.obj(m.get("preferences"));
+        if (in == null) return false;
+        SharedPreferences.Editor e = prefs.edit().clear();
+        for (java.util.Map.Entry<String, Object> entry : in.entrySet()) {
+            java.util.Map<String, Object> one = app.tilescreen.core.Json.obj(entry.getValue());
+            if (one == null) continue;
+            String type = app.tilescreen.core.Json.str(one, "type");
+            Object v = one.get("value");
+            try {
+                if ("bool".equals(type)) e.putBoolean(entry.getKey(), Boolean.TRUE.equals(v));
+                else if ("int".equals(type)) e.putInt(entry.getKey(), ((Number) v).intValue());
+                else if ("long".equals(type)) e.putLong(entry.getKey(), Long.parseLong(String.valueOf(v)));
+                else if ("float".equals(type)) e.putFloat(entry.getKey(), ((Number) v).floatValue());
+                else if ("string".equals(type)) e.putString(entry.getKey(), String.valueOf(v));
+            } catch (Exception bad) {
+                log("import: left out " + entry.getKey() + " (" + bad + ")");
+            }
+        }
+        e.commit();
+        Object screenSettings = m.get("screen_settings");
+        if (screenSettings != null) write(new File(getFilesDir(), "screen-settings.json"), app.tilescreen.core.Json.write(screenSettings));
+        log("import: settings of " + app.tilescreen.core.Json.str(m, "node") + " put back; the screen starts again");
+        restart();
+        return true;
     }
 
     static String read(File f) {

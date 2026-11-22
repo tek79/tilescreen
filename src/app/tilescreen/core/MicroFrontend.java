@@ -201,30 +201,38 @@ public final class MicroFrontend {
             bfly4(out, o, fstride, m);
         }
 
+        /** kf_bfly4, written out (sround by hand, locals for every value): it is most of the front end's time. */
         private void bfly4(short[] F, int o, int fstride, int m) {
+            final short[] tw = twiddles;
             int tw1 = 0, tw2 = 0, tw3 = 0;
-            int m1 = 2 * m, m2 = 4 * m, m3 = 6 * m;
+            final int m1 = 2 * m, m2 = 4 * m, m3 = 6 * m;
+            final int s1 = 2 * fstride, s2 = 4 * fstride, s3 = 6 * fstride;
             for (int k = 0; k < m; k++, o += 2) {
-                for (int j = 0; j < 4; j++) {
-                    int at = o + j * m1;
-                    F[at] = sround(F[at] * 8191);
-                    F[at + 1] = sround(F[at + 1] * 8191);
-                }
-                short s0r = sround(F[o + m1] * twiddles[tw1] - F[o + m1 + 1] * twiddles[tw1 + 1]);
-                short s0i = sround(F[o + m1] * twiddles[tw1 + 1] + F[o + m1 + 1] * twiddles[tw1]);
-                short s1r = sround(F[o + m2] * twiddles[tw2] - F[o + m2 + 1] * twiddles[tw2 + 1]);
-                short s1i = sround(F[o + m2] * twiddles[tw2 + 1] + F[o + m2 + 1] * twiddles[tw2]);
-                short s2r = sround(F[o + m3] * twiddles[tw3] - F[o + m3 + 1] * twiddles[tw3 + 1]);
-                short s2i = sround(F[o + m3] * twiddles[tw3 + 1] + F[o + m3 + 1] * twiddles[tw3]);
-                short s5r = (short) (F[o] - s1r), s5i = (short) (F[o + 1] - s1i);
-                F[o] = (short) (F[o] + s1r); F[o + 1] = (short) (F[o + 1] + s1i);
-                short s3r = (short) (s0r + s2r), s3i = (short) (s0i + s2i);
-                short s4r = (short) (s0r - s2r), s4i = (short) (s0i - s2i);
-                F[o + m2] = (short) (F[o] - s3r); F[o + m2 + 1] = (short) (F[o + 1] - s3i);
-                tw1 += 2 * fstride; tw2 += 4 * fstride; tw3 += 6 * fstride;
-                F[o] = (short) (F[o] + s3r); F[o + 1] = (short) (F[o + 1] + s3i);
-                F[o + m1] = (short) (s5r + s4i); F[o + m1 + 1] = (short) (s5i - s4r);
-                F[o + m3] = (short) (s5r - s4i); F[o + m3 + 1] = (short) (s5i + s4r);
+                // C_FIXDIV(.., 4): times 8191, rounded, as int16.
+                int f0r = (short) ((F[o] * 8191 + 16384) >> 15), f0i = (short) ((F[o + 1] * 8191 + 16384) >> 15);
+                int f1r = (short) ((F[o + m1] * 8191 + 16384) >> 15), f1i = (short) ((F[o + m1 + 1] * 8191 + 16384) >> 15);
+                int f2r = (short) ((F[o + m2] * 8191 + 16384) >> 15), f2i = (short) ((F[o + m2 + 1] * 8191 + 16384) >> 15);
+                int f3r = (short) ((F[o + m3] * 8191 + 16384) >> 15), f3i = (short) ((F[o + m3 + 1] * 8191 + 16384) >> 15);
+                int w1r = tw[tw1], w1i = tw[tw1 + 1], w2r = tw[tw2], w2i = tw[tw2 + 1], w3r = tw[tw3], w3i = tw[tw3 + 1];
+                int s0r = (short) ((f1r * w1r - f1i * w1i + 16384) >> 15), s0i = (short) ((f1r * w1i + f1i * w1r + 16384) >> 15);
+                int s1r = (short) ((f2r * w2r - f2i * w2i + 16384) >> 15), s1i = (short) ((f2r * w2i + f2i * w2r + 16384) >> 15);
+                int s2r = (short) ((f3r * w3r - f3i * w3i + 16384) >> 15), s2i = (short) ((f3r * w3i + f3i * w3r + 16384) >> 15);
+                int s5r = (short) (f0r - s1r), s5i = (short) (f0i - s1i);
+                f0r = (short) (f0r + s1r);
+                f0i = (short) (f0i + s1i);
+                int s3r = (short) (s0r + s2r), s3i = (short) (s0i + s2i);
+                int s4r = (short) (s0r - s2r), s4i = (short) (s0i - s2i);
+                F[o + m2] = (short) (f0r - s3r);
+                F[o + m2 + 1] = (short) (f0i - s3i);
+                F[o] = (short) (f0r + s3r);
+                F[o + 1] = (short) (f0i + s3i);
+                F[o + m1] = (short) (s5r + s4i);
+                F[o + m1 + 1] = (short) (s5i - s4r);
+                F[o + m3] = (short) (s5r - s4i);
+                F[o + m3 + 1] = (short) (s5i + s4r);
+                tw1 += s1;
+                tw2 += s2;
+                tw3 += s3;
             }
         }
     }

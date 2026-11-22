@@ -230,6 +230,20 @@ public final class MicroModel {
                 count[d] = Math.max(0, (e - b + s - 1) / s);
             }
             final int[] stridesIn = rowStrides(a.shape);
+            // The usual slice keeps the last rows of the time axis whole (stride 1, every later axis complete): one copy.
+            int first = 0;
+            while (first < rank && count[first] == 1 && step[first] == 1) first++;
+            boolean block = true;
+            for (int d = 0; d < rank; d++) {
+                if (step[d] != 1) block = false;
+                if (d > first && (start[d] != 0 || count[d] != a.shape[d])) block = false;
+            }
+            if (block) {
+                int from = 0;
+                for (int d = 0; d < rank; d++) from += start[d] * stridesIn[d];
+                final int src = from;
+                return new Op() { void run() { System.arraycopy(a.data, src, t.data, 0, t.size); } };
+            }
             return new Op() { void run() {
                 int[] idx = new int[rank];
                 for (int i = 0; i < t.size; i++) {
@@ -292,6 +306,60 @@ public final class MicroModel {
             final int inOffset = -a.zeroPoint, outOffset = t.zeroPoint;
             final int[] range = activationRange(activation, t);
             final byte[] x = a.data, w = f.data, y = t.data;
+            // Without padding every tap is inside, so the input's offset comes out of the sum once per channel:
+            // sum(w * (x + offset)) = sum(w * x) + offset * sum(w). Same integers, a third of the work in the loop.
+            boolean unpadded = padH == 0 && padW == 0 && (OH - 1) * sh + (KH - 1) * dh < H && (OW - 1) * sw + (KW - 1) * dw < W;
+            if (unpadded && !depthwise && KW == 1 && dw == 1 && W == 1 && OW == 1) {
+                final int[] wsum = new int[O];
+                final int span = KH * C;
+                for (int oc = 0; oc < O; oc++) {
+                    int sum = 0;
+                    for (int k = 0; k < span; k++) sum += w[oc * span + k];
+                    wsum[oc] = sum * inOffset + (bias != null ? bias[oc] : 0);
+                }
+                // A column of rows (microWakeWord's layers are all [1, H, 1, C]): the taps of an output are KH rows of
+                // C values in a row, dh rows apart; with dh 1 one run of KH * C.
+                return new Op() { void run() {
+                    int lo = range[0], hi = range[1];
+                    for (int oy = 0; oy < OH; oy++) {
+                        int base = oy * sh * C;
+                        for (int oc = 0; oc < O; oc++) {
+                            int acc = wsum[oc];
+                            int wi = oc * span;
+                            if (dh == 1) {
+                                for (int k = 0; k < span; k++) acc += w[wi + k] * x[base + k];
+                            } else {
+                                for (int ky = 0; ky < KH; ky++) {
+                                    int xi = base + ky * dh * C, wk = wi + ky * C;
+                                    for (int ic = 0; ic < C; ic++) acc += w[wk + ic] * x[xi + ic];
+                                }
+                            }
+                            acc = multiply(acc, mult[oc], shift[oc]) + outOffset;
+                            y[oy * O + oc] = (byte) (acc < lo ? lo : acc > hi ? hi : acc);
+                        }
+                    }
+                } };
+            }
+            if (unpadded && depthwise && KW == 1 && W == 1 && OW == 1 && depthMultiplier == 1) {
+                final int[] wsum = new int[O];
+                for (int oc = 0; oc < O; oc++) {
+                    int sum = 0;
+                    for (int ky = 0; ky < KH; ky++) sum += w[ky * O + oc];
+                    wsum[oc] = sum * inOffset + (bias != null ? bias[oc] : 0);
+                }
+                return new Op() { void run() {
+                    int lo = range[0], hi = range[1];
+                    for (int oy = 0; oy < OH; oy++) {
+                        for (int oc = 0; oc < O; oc++) {
+                            int acc = wsum[oc];
+                            int xi = oy * sh * C + oc, step = dh * C;
+                            for (int ky = 0; ky < KH; ky++, xi += step) acc += w[ky * O + oc] * x[xi];
+                            acc = multiply(acc, mult[oc], shift[oc]) + outOffset;
+                            y[oy * O + oc] = (byte) (acc < lo ? lo : acc > hi ? hi : acc);
+                        }
+                    }
+                } };
+            }
             return new Op() { void run() {
                 for (int oy = 0; oy < OH; oy++)
                     for (int ox = 0; ox < OW; ox++)

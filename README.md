@@ -43,8 +43,10 @@ then laid out in one place.
 - Sound, as on Tessera's ESP32-P4 screens: a **media player** for text to speech and music, **Talk** to the doorbell,
   **calls between screens**, and Home Assistant's **Assist** with a **wake word heard on the tablet itself** (on a tablet
   with a microphone).
+- An ESPHome **Bluetooth proxy**, with connections, on a tablet with Bluetooth LE.
+- **Back up and restore** of the tablet's settings, encryption key included, to a file.
 
-**Plugins:** Tile Screen carries its own versions of six Tessera plugins (see the guide). Any other plugin's tile shows its name and "Plugin missing".
+**Plugins:** Tile Screen carries its own versions of seven Tessera plugins (see the guide). Any other plugin's tile shows its name and "Plugin missing".
 
 ## Compatibility
 
@@ -81,7 +83,7 @@ harmlessly.
 Tile Screen works fully without root. On a rooted tablet (Magisk, for example), the app asks for root **once**,
 the first time it needs it, and Magisk shows its usual prompt. You can deny it.
 
-Root is used for four things:
+Root is used for five things:
 
 1. **Turning the backlight fully off.** Without root, Android can only set the screen to its dimmest level. That isn't
    dark, and on many tablets it is quite bright. With root, the app writes the brightness straight to the backlight
@@ -94,10 +96,14 @@ Root is used for four things:
    relevant lines (wake locks, Stay awake, screensaver settings) to its log.
 4. **Adding widgets.** The first time you add a widget to the widget page, the app grants itself Android's permission to
    place widgets (`appwidget grantbind`), as tapping *Always allow* would. Without root, Android asks instead.
+5. **Turning Location on for the Bluetooth proxy.** Android 6 and later hear no Bluetooth devices while Location is off.
+   When the proxy is switched on and Location is off, the app turns it on in battery saving mode (no GPS):
+   `settings put secure location_mode 2`, or `cmd location set-location-enabled true` on Android 10 and later.
 
 Root is never used for anything else. The app doesn't install anything, change system files, or run commands
 it gets from the network. Every root command is in [`Root.java`](src/app/tilescreen/Root.java),
-[`MainActivity.java`](src/app/tilescreen/MainActivity.java) and [`WidgetPage.java`](src/app/tilescreen/WidgetPage.java).
+[`MainActivity.java`](src/app/tilescreen/MainActivity.java), [`WidgetPage.java`](src/app/tilescreen/WidgetPage.java) and
+[`Bluetooth.java`](src/app/tilescreen/Bluetooth.java).
 The microphone needs no root.
 
 ### Other Android permissions
@@ -110,9 +116,13 @@ The microphone needs no root.
 | Run at startup | To start again after a reboot. |
 | Microphone (record audio) | For the doorbell's Talk, calls between screens and the voice assistant: a question, and the wake word while it is on. Nothing is recorded or kept; the sound goes only where the feature sends it. A tablet without a microphone simply doesn't offer these. |
 | Change audio settings | To switch Android to its call mode with the speakerphone during a call between screens, and back after. |
+| Bluetooth, Bluetooth admin | For the Bluetooth proxy, only while its switch is on: to hear Bluetooth devices near the tablet and connect to them for Home Assistant, and to turn Bluetooth on. |
+| Storage (Android 4.3 and older only) | To export and import the settings in the Download folder, where Android has no file picker yet. |
+| Location (approximate and precise) | Android lets an app hear Bluetooth devices only with a location permission, since they can reveal where you are. The app never reads the tablet's location. |
 
 Android grants these when the app is installed (it doesn't ask at run time). On Android 6 and later you can still turn
-the microphone off in Android's settings for the app; Talk, calls and the assistant then hear silence.
+the microphone off in Android's settings for the app; Talk, calls and the assistant then hear silence. Android 6 and later
+also need **Location** switched on for any app to hear Bluetooth devices (the guide's *The Bluetooth proxy*).
 
 **The microphone is shared.** Android before version 10 lets only one recording use the microphone at a time. With the
 voice assistant's **Wake word** on, Tile Screen holds the microphone the whole time its tiles are on the glass, so other

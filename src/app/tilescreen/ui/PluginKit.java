@@ -192,6 +192,8 @@ final class PluginKit {
             all.add(new ThermoDialPlugin());
             all.add(new AvPanelPlugin());
             all.add(new VoiceAssistPlugin());
+            // Bluetooth proxy (bt_proxy 0.2.0): no tiles, the proxy itself (core/BleProxy) on a tablet with Bluetooth LE.
+            all.add(new Plugin("bt_proxy", "0.2.0") {});
             List<Map<String, Object>> hello = new ArrayList<Map<String, Object>>();
             for (Plugin p : all) hello.add(p.hello());
             Tessera.plugins = hello;

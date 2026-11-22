@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="app.tilescreen"
-    android:versionCode="54"
-    android:versionName="0.18.1">
+    android:versionCode="56"
+    android:versionName="0.20.0">
 
     <uses-sdk android:minSdkVersion="17" android:targetSdkVersion="22" />
 
@@ -15,6 +15,14 @@
     <!-- The microphone, only while Talk or a call is on (Mic); the volume and the voice path for a call. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <!-- The Bluetooth proxy: scanning and connecting (Android 6+ hears no Bluetooth devices without a location permission). -->
+    <uses-permission android:name="android.permission.BLUETOOTH" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
+    <!-- Export and import of the settings on Android 4.2 and 4.3, which have no document picker: the Download folder. -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="18" />
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
 
     <application

@@ -84,6 +84,13 @@ Inc., Apache License 2.0. core/WakeWord.java follows ESPHome's micro_wake_word (
 micro_wake_word.cpp; https://github.com/esphome/esphome), Copyright (c) 2019 ESPHome, whose C++ is licensed under the
 GNU General Public License v3.0 (compatible with this project's AGPL v3): its detection rules and feature scaling.
 
+The Bluetooth proxy
+-------------------
+
+core/BleProxy.java follows ESPHome's bluetooth_proxy component (https://github.com/esphome/esphome), Copyright (c) 2019
+ESPHome, whose C++ is licensed under the GNU General Public License v3.0: its slots, connections-free reports, scanner
+state and the answers Home Assistant waits for. Its settings follow Tessera's Bluetooth proxy plugin (below).
+
 Fonts and icons
 ---------------
 
@@ -93,7 +100,7 @@ font is distributed under the Apache License 2.0. See assets/MDI-LICENSE.
 Tessera plugins (ported to Java)
 --------------------------------
 
-Flip clock, Tap sound, Waste collection and Voice assistant (https://github.com/MaxGramser/tessera-plugins)
+Flip clock, Tap sound, Waste collection, Voice assistant and Bluetooth proxy (https://github.com/MaxGramser/tessera-plugins)
   Copyright (c) 2026 Max Gramser. MIT License. Tap sound's two sounds (assets/tap.wav, assets/step.wav) are the
   plugin's own files.
   Voice assistant's two sounds (assets/assist_wake.ogg, assets/assist_thinking.ogg) are its wake.wav and

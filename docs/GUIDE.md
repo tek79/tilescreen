@@ -8,7 +8,7 @@ It is built for low-memory tablets such as the 5th-gen Fire 7 running LineageOS.
 view and no Home Assistant app inside it: a small native app draws the tiles itself. It should run
 on Android 4.2 and later.
 
-This guide covers version 0.18.1.
+This guide covers version 0.20.0.
 
 ## 1. Install it on the tablet
 
@@ -185,8 +185,9 @@ Other limits:
 
   The shape only sets the editor's preview and what Tessera offers: the tablet draws at its own size, so the editor's
   text can look larger or smaller than on the tablet. Changing the shape doesn't change the grid. Tessera also offers
-  plugins for hardware a tablet lacks (Bluetooth proxy, Screen camera); added, they show as not running. Voice assistant
-  is one Tile Screen carries, on a tablet with a microphone (see **The voice assistant**).
+  plugins for hardware a tablet lacks (Screen camera); added, they show as not running. Voice assistant and Bluetooth
+  proxy are ones Tile Screen carries, on a tablet with a microphone or Bluetooth LE (see **The voice assistant** and
+  **The Bluetooth proxy**).
 - A square screen has one grid whichever way it hangs, as Tessera's square boards, and starts at Tessera's 2×3.
 - The grid defaults to 4×3 in landscape (3×4 in portrait). Choose it in Tessera's editor (the screen's Settings → Grid, from 1×1 to 8×8, and Landscape or Portrait), as for an ESP32 screen; the tablet takes it when you save. The tablet's own settings set the landscape grid too.
 - **Deleting the screen from Home Assistant:** the tablet keeps its encryption key. To add it again,
@@ -208,6 +209,7 @@ group, or pick its face in the Screensaver card.
 | Waste collection | 1.0.7 | A tile with the next collection ("Paper", "Tomorrow"), a card with four weeks of collections (a tap on the tile, or a calendar tile whose tap is set to it), and a top bar item ("Tomorrow: Paper") with **Waste in top bar** and **Waste days ahead**. The top bar reads the calendar of the first Next collection tile of the layout. |
 | Thermo dial | 0.2.0 | A climate tile with the target large and - / mode / + keys, and a card with a dial to drag; the target goes to Home Assistant when you let go (the keys after 600 ms). |
 | AV wall panel controls | 0.1.1 | Five tiles of keys: transport, D-pad, volume or channel, a number pad and a selector grid. Each key runs the action typed for it in the editor, such as `remote.send_command command=UP`. |
+| Bluetooth proxy | 0.2.0 | ESPHome's Bluetooth proxy on the tablet; see **The Bluetooth proxy**. Only on a tablet with Bluetooth LE (Android 4.3 and later). |
 | Voice assistant | 0.4.0 | Home Assistant's Assist on the tablet: the **Assistant** tile, its top bar item, the popup, and the wake word heard on the tablet itself. Only on a tablet with a microphone; see **The voice assistant**. |
 
 A plugin's tiles use the tablet's permission to perform Home Assistant actions, as every control does.
@@ -288,8 +290,13 @@ A tablet without a working microphone doesn't offer the assistant.
 ### The wake word
 
 Turn on **Wake word** and the tablet listens for its **Wake phrase**: **Okay Nabu**, **Hey Jarvis** or **Hey Mycroft**,
-the three Tessera's plugin carries. The tile then says *Say "Okay Nabu"*. Home Assistant's own **Wake word** choice on
-the voice assistant device changes the Wake phrase too.
+the three Tessera's plugin carries. The tile then says *Say "Okay Nabu"*.
+
+Home Assistant also shows its own **Wake word** and **Wake word 2** choices on the voice assistant device, as for any
+ESPHome voice device (a Tessera screen has them too). Choosing a phrase in Home Assistant's **Wake word** changes **Wake
+phrase** on the tablet, but not the other way round: the ESPHome protocol has no message to tell Home Assistant, so after
+you change Wake phrase, Home Assistant's Wake word shows the old phrase until it reconnects. The tablet listens for one
+phrase at a time, so leave **Wake word 2** on *No wake word*.
 
 - **It is heard on the tablet.** The tablet runs ESPHome's microWakeWord models itself, the same models and the same
   rules an ESP32 screen uses, so it hears the phrase as well as one does. Nothing leaves the tablet until it hears the
@@ -325,6 +332,38 @@ are on the glass, an app recording in the background gets silence.
 If you use another voice assistant on the same tablet, or an app that records in the background, leave **Wake word**
 off on that tablet. Tapping the Assistant tile still works.
 
+## The Bluetooth proxy
+
+On a tablet with Bluetooth LE (Android 4.3 and later), Tile Screen is an ESPHome **Bluetooth proxy**, as Tessera's
+**Bluetooth proxy** plugin makes an ESP32-P4 screen one. Home Assistant hears Bluetooth devices near the tablet
+(thermometers, plant sensors, tags for presence with Bermuda) and can connect to up to three at a time through it (a
+lock, a light), with pairing.
+
+- **Turn it on** with **Bluetooth proxy** on the settings page (under Screen) or its switch in Home Assistant. It is off
+  until you do, unlike Tessera's plugin. The tablet then drops its connection to Home Assistant for a second, so Home
+  Assistant connects again and sees the proxy; it appears in Home Assistant's Bluetooth settings like any ESPHome proxy.
+  Add the plugin to the tablet on Tessera's **Plugins** page too if you like (it records it, nothing is built).
+- **Bluetooth status** (the settings page, and a diagnostic sensor in Home Assistant) says *Listening*, *Off*,
+  *Starting*, *Waiting for Home Assistant*, or what stops it: *Bluetooth is off*, *Location is off*.
+- **Bluetooth** comes on by itself when you turn the proxy on.
+- **Location must be on** (Android 6 and later). Android hears no Bluetooth devices while Location is off, whatever the
+  app's permissions; that is Android's rule. On a rooted tablet the app turns Location on itself, in battery saving mode
+  (no GPS). Without root, turn it on in Android's settings.
+- **It listens while the screen is on**, also dimmed in standby. Android 8.1 and later stop a Bluetooth scan without
+  filters while the screen is off, so with **Use Android screensaver** the proxy may hear nothing while Android has the
+  screen off.
+- **Differences from an ESP32 proxy:** Android always scans actively, so Home Assistant's passive mode isn't available.
+  Before Android 14 Android doesn't say whether a device's address is public or random; the tablet connects by address
+  either way.
+- **Connections** depend on the tablet's Bluetooth. Advertisements work on almost any tablet; connecting to devices
+  is less dependable on old Android versions, which may fail now and then with error 133 (Android's catch-all GATT
+  error). The log (Tablet settings → Log) shows each connection with *bluetooth:* lines.
+- **Bluetooth scan** (the settings page and Home Assistant) sets how much of the time it listens: **Balanced** (a
+  quarter of the time, the default), **Fast** (all the time: devices are heard more often, which suits presence with
+  Bermuda, at the cost of Wi-Fi and some processor) or **Low power** (a tenth). Android 4.3 and 4.4 have one speed only.
+- **Wi-Fi:** many tablets use one chip for Wi-Fi and Bluetooth. If camera streams stutter, choose Low power or turn the
+  proxy off on that tablet.
+
 ## Live cameras
 
 A camera tile streams when its **Refresh** is set to **Live** in Tessera's editor (a refresh of 5 s or more keeps a still
@@ -347,8 +386,16 @@ chime on the notification volume and opens the camera live, full screen:
 - with a lock or a door action in the automation, a **Door** key stands beside the picture: tap once ("Tap again to
   open"), then again within five seconds. It shows the lock's state, and "Unlocking" until the lock answers.
 
-With Home Assistant's two-way audio, the view has a **Talk** key (see **Sound: the speaker, Talk and calls**). There is
-no **Sound** key yet: the picture comes without the doorbell's own sound, which an ESP32-P4 screen plays.
+The view has the keys this ring and this tablet can use, as on a P4 screen: **Door** (above), **Talk** with Home
+Assistant's two-way audio (see **Sound: the speaker, Talk and calls**), and **Sound**:
+
+- **Sound** plays the doorbell camera's own sound on the tablet's speaker, at the media volume. It is on when the view
+  opens, unless the automation says `sound: false` (Tessera's wizard asks); a tap turns it off and on.
+- The picture and the sound come in one stream, the one Tessera makes for the tablet as the ring comes, so the view
+  opens live at once.
+- While you talk (Talk on and your voice heard), the doorbell's sound waits, so it doesn't echo back to the door.
+- The sound comes only when the camera's stream in Home Assistant has it. Without a stream from Tessera (no address for
+  it on the tablet's network), the view shows the camera's pictures as before, with no Sound key.
 
 ## Light presets
 
@@ -432,6 +479,22 @@ The screen's device in Home Assistant has a **Next alarm** sensor, a timestamp l
 diagnostic with the app that set it. With no alarm set, it is unknown. Android only shares the next alarm from
 Android 5 on, so on Android 4 it stays unknown.
 
+## Back up and restore
+
+**This screen → Tablet settings → Back up or restore settings** saves everything the tablet keeps of its own to a file,
+and puts such a file back:
+
+- **Export** asks where to save it (Android's file picker: the tablet, an SD card, Google Drive). Android 4.2 and 4.3
+  have no picker; there it goes to the Download folder as `tilescreen-<name>.json`.
+- The file holds the tablet's own settings (name, grid, screen shape, live camera tiles, the widget page, open at
+  boot), its **encryption key** and MAC, and the screen's Tessera settings (brightness, standby, night, Back to page 1,
+  the assistant's, the Bluetooth proxy's). Not the layout: Tessera sends that again by itself.
+- **Import** reads such a file, says which screen it came from and when, and after you confirm replaces this tablet's
+  settings with it and starts the screen again. With the key and MAC back, Home Assistant knows it as the same screen,
+  so a reinstalled tablet comes back without being added again.
+- The file has the encryption key in it: keep it as you would a password. Imported on another tablet, that tablet
+  becomes the same screen in Home Assistant; don't run both at once.
+
 ## If something goes wrong
 
 Long-press the title, then **This screen → Tablet settings → Log**: it shows connections, layouts received, refusals and
@@ -458,6 +521,9 @@ on a desktop JVM against the real clients:
   drawing classes. It renders frames and replays touches.
 - `test/alarm_test.py`, `test/call_test.py` and `test/assist_test.py` drive the alarm keypad, calls between screens and
   the voice assistant with the add-on's code and `aioesphomeapi`.
+- `test/doorbell_sound_test.py` rings with a stream of pictures and sound and drives the Sound key.
+- `test/ble_test.py` drives the Bluetooth proxy as Home Assistant does (`aioesphomeapi`'s Bluetooth calls), against a
+  stand-in radio in `RenderMain`.
 - `test/wake_test.py` drives the wake word end to end (Home Assistant's wake word choice, Wake word and Wake phrase, a
   question the phrase starts). `test/WakeMain.java` checks the wake word's sums against the originals: the audio front
   end against TensorFlow Lite Micro's C code, every value, and the models against TensorFlow Lite Micro's own

@@ -515,6 +515,20 @@ public final class EspDevice {
 
     public interface WakeWordChoice { void chose(String id); }
 
+    /** The Bluetooth proxy, where the tablet has Bluetooth LE; null without. */
+    public volatile BleProxy bluetooth;
+    /** BluetoothProxyFeature bits the device info gives (0 with the proxy switched off) and the radio's address. */
+    public volatile int bluetoothFeatures;
+    public volatile String bluetoothMac = "";
+
+    /**
+     * Home Assistant reads the proxy's features once, when it connects: after the switch changed, every connection closes
+     * so it connects again and reads them anew (a second of unavailable).
+     */
+    public void reconnectClients() {
+        for (Conn c : conns) c.close();
+    }
+
     /** Home Assistant chose another wake word for the screen. */
     public volatile WakeWordChoice wakeWordChoice;
 
@@ -741,6 +755,18 @@ public final class EspDevice {
         volatile boolean ready, statesSubscribed, servicesSubscribed;
         volatile Noise noise;
         final String peer;
+        /** Messages from other threads (the Bluetooth proxy's) go out on the writer, in order. */
+        final BleProxy.Sender sender = new BleProxy.Sender() {
+            public void send(final int type, final Pb.Out m) {
+                try {
+                    writer.execute(new Runnable() {
+                        public void run() { Conn.this.send(type, m); }
+                    });
+                } catch (java.util.concurrent.RejectedExecutionException stopped) {
+                    // the server stopped
+                }
+            }
+        };
 
         Conn(Socket sock) throws IOException {
             this.sock = sock;
@@ -798,6 +824,8 @@ public final class EspDevice {
             } finally {
                 close();
                 conns.remove(this);
+                BleProxy bp = bluetooth;
+                if (bp != null) bp.gone(sender);
                 if (voiceConn == this) {
                     voiceConn = null;
                     VoiceListener l = voiceListener;
@@ -853,7 +881,10 @@ public final class EspDevice {
                             .string(9, info.projectVersion).string(12, info.manufacturer)
                             .string(13, info.friendlyName).string(16, info.suggestedArea)
                             .bool(19, true).bool(26, key == null)
-                            .varint(17, voiceFeatures));
+                            .varint(17, voiceFeatures)
+                            // A Bluetooth proxy (Tessera's bt_proxy): its features and the radio's own address.
+                            .varint(15, bluetooth != null ? bluetoothFeatures : 0)
+                            .string(18, bluetooth != null && bluetoothFeatures != 0 ? bluetoothMac : ""));
                     return true;
                 case LIST_ENTITIES_REQ: {
                     List<Entity> es;
@@ -928,6 +959,21 @@ public final class EspDevice {
                     log.log(peer + (subscribe ? " takes this screen as its voice assistant" : " lets go of the voice assistant"));
                     VoiceListener l = voiceListener;
                     if (l != null) l.subscribed(voiceConn != null);
+                    return true;
+                }
+                case BleProxy.SUBSCRIBE_ADS:
+                case BleProxy.UNSUBSCRIBE_ADS:
+                case BleProxy.SUBSCRIBE_FREE:
+                case BleProxy.SCANNER_SET_MODE:
+                case BleProxy.DEVICE_REQUEST:
+                case BleProxy.GET_SERVICES:
+                case BleProxy.READ:
+                case BleProxy.WRITE:
+                case BleProxy.READ_DESCRIPTOR:
+                case BleProxy.WRITE_DESCRIPTOR:
+                case BleProxy.NOTIFY: {
+                    BleProxy p = bluetooth;
+                    if (p != null && bluetoothFeatures != 0) p.message(type, f, sender);
                     return true;
                 }
                 case VA_CONFIG_REQ: {

@@ -164,6 +164,14 @@ final class SettingsPage {
                 };
                 out.add(ask);
             }
+            // The Bluetooth proxy's (bt_proxy), where the tablet has Bluetooth LE.
+            if (App.get().screen().screenSettings.hasBluetooth()) {
+                out.add(row(TOGGLE, "Bluetooth proxy", "bluetooth_proxy"));
+                Row scan = row(CHOICE, "Bluetooth scan", "bluetooth_scan");
+                scan.options = app.tilescreen.core.ScreenSettings.SCAN_MODES;
+                out.add(scan);
+                out.add(info("Bluetooth status", App.get().screen().screenSettings.bluetoothStatusText()));
+            }
             out.add(number("Waste days ahead", "waste_days_ahead", 0, 3, 1, ""));
             out.add(row(ROTATION, "Rotation", "rotation"));
         } else if (g.equals(ABOUT)) {

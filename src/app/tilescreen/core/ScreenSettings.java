@@ -46,6 +46,11 @@ public final class ScreenSettings {
      * update never leaves a wall of tablets listening that nobody switched on.
      */
     private int assistWakeWord = 0, assistWakePhrase = 0;
+    /** Tessera's bt_proxy switch (on by default there); off here until switched on, as the wake word. */
+    private int bluetoothProxy = 0;
+    /** The app's own: how much of the time the proxy listens (Low power, Balanced, Fast: Android's scan modes). */
+    private int bluetoothScan = 1;
+    public static final String[] SCAN_MODES = {"Low power", "Balanced", "Fast"};
     // This app's own, not Tessera's: Android's screen timeout and screensaver instead of Tessera's standby.
     private int androidSaver = 0;
     /** The app's own too: a tile's icon toggles it and a tap anywhere else opens its card. */
@@ -163,6 +168,52 @@ public final class ScreenSettings {
         return n;
     }
 
+    private EspDevice.Switch eBluetooth;
+    private EspDevice.TextSensor eBluetoothStatus;
+    private EspDevice.Select eBluetoothScan;
+    /** The Bluetooth proxy switch changed. */
+    public volatile Runnable onBluetooth, onBluetoothScan;
+
+    /**
+     * The Bluetooth proxy's switch and status (Tessera's bt_proxy plugin, named as its plugin.yaml names them): only on a
+     * tablet with Bluetooth LE.
+     */
+    public void bluetoothToggles(EspDevice d) {
+        if (eBluetooth != null) return;
+        eBluetooth = toggle(d, "bluetooth_proxy", "Bluetooth proxy", "mdi:bluetooth", "bluetooth_proxy");
+        eBluetoothScan = new EspDevice.Select("bluetooth_scan", "Bluetooth scan", SCAN_MODES);
+        eBluetoothScan.icon = "mdi:bluetooth-audio";
+        eBluetoothScan.category = EspDevice.CATEGORY_CONFIG;
+        eBluetoothScan.onSet = new EspDevice.Select.OnSet() {
+            public void set(String option) {
+                int i = java.util.Arrays.asList(SCAN_MODES).indexOf(option);
+                if (i >= 0) ScreenSettings.this.set("bluetooth_scan", i);
+                else publish();
+            }
+        };
+        d.add(eBluetoothScan);
+        eBluetoothStatus = new EspDevice.TextSensor("bluetooth_status", "Bluetooth status");
+        eBluetoothStatus.icon = "mdi:bluetooth-settings";
+        eBluetoothStatus.category = EspDevice.CATEGORY_DIAGNOSTIC;
+        d.add(eBluetoothStatus);
+        publish();
+    }
+
+    public boolean hasBluetooth() { return eBluetooth != null; }
+    public synchronized boolean bluetoothProxy() { return bluetoothProxy != 0; }
+    public synchronized int bluetoothScan() { return bluetoothScan; }
+
+    /** The proxy's status in Tessera's words: Listening, Off, Starting, or why it can't. */
+    public void bluetoothStatus(String text) {
+        EspDevice.TextSensor t = eBluetoothStatus;
+        if (t != null) t.set(text);
+    }
+
+    public String bluetoothStatusText() {
+        EspDevice.TextSensor t = eBluetoothStatus;
+        return t == null ? "" : t.get();
+    }
+
     private EspDevice.Switch eWakeWord, eWakeSound, eThinkingSound, eShowPopup;
     private EspDevice.Select eWakePhrase;
     /** The wake word or its phrase changed (the app starts or stops listening). */
@@ -255,6 +306,14 @@ public final class ScreenSettings {
         if (store != null) store.save(after);
         publish();
         apply();
+        if (key.equals("bluetooth_scan")) {
+            Runnable b = onBluetoothScan;
+            if (b != null) b.run();
+        }
+        if (key.equals("bluetooth_proxy")) {
+            Runnable b = onBluetooth;
+            if (b != null) b.run();
+        }
         if (key.equals("assist_wake_word") || key.equals("assist_wake_phrase")) {
             Runnable w = onWake;
             if (w != null) w.run();
@@ -296,6 +355,8 @@ public final class ScreenSettings {
         else if (key.equals("assist_show_popup")) assistShowPopup = flag(value);
         else if (key.equals("assist_wake_word")) assistWakeWord = flag(value);
         else if (key.equals("assist_wake_phrase")) assistWakePhrase = clamp(value, 0, WakeWord.PHRASES.length - 1);
+        else if (key.equals("bluetooth_proxy")) bluetoothProxy = flag(value);
+        else if (key.equals("bluetooth_scan")) bluetoothScan = clamp(value, 0, SCAN_MODES.length - 1);
         else if (key.equals("android_saver")) {
             androidSaver = flag(value);
             if (androidSaver != 0) { dimmed = false; sleepRequested = false; }
@@ -338,6 +399,8 @@ public final class ScreenSettings {
         m.put("assist_show_popup", (double) assistShowPopup);
         m.put("assist_wake_word", (double) assistWakeWord);
         m.put("assist_wake_phrase", (double) assistWakePhrase);
+        m.put("bluetooth_proxy", (double) bluetoothProxy);
+        m.put("bluetooth_scan", (double) bluetoothScan);
         m.put("android_saver", (double) androidSaver);
         m.put("icon_toggles", (double) iconToggles);
         m.put("system_brightness", (double) systemBrightness);
@@ -363,11 +426,11 @@ public final class ScreenSettings {
     }
 
     private void publish() {
-        int b, sb, nb, ss, ah, st, ne, nst, nen, dk, ahm, hos, sw, pb, hb, lp, cr, cs, dnd, aw, at, ap, ww, wp, rot, as, it, sys, lw, bd, ts, wb, wd;
+        int b, sb, nb, ss, ah, st, ne, nst, nen, dk, ahm, hos, sw, pb, hb, lp, cr, cs, dnd, aw, at, ap, ww, wp, bt, bs, rot, as, it, sys, lw, bd, ts, wb, wd;
         synchronized (this) {
             b = brightness; sb = standbyBrightness; nb = nightBrightness; ss = standbySeconds; ah = autoHomeSeconds;
             st = standbyEnabled; ne = nightEnabled; nst = nightStart; nen = nightEnd; dk = darkMode; ahm = autoHome;
-            hos = homeOnStandby; sw = swipePages; pb = pageButtons; hb = homeButton; lp = loopPages; cr = callRingtone; cs = callSwitching; dnd = doNotDisturb; aw = assistWakeSound; at = assistThinkingSound; ap = assistShowPopup; ww = assistWakeWord; wp = assistWakePhrase; rot = rotation; as = androidSaver; it = iconToggles;
+            hos = homeOnStandby; sw = swipePages; pb = pageButtons; hb = homeButton; lp = loopPages; cr = callRingtone; cs = callSwitching; dnd = doNotDisturb; aw = assistWakeSound; at = assistThinkingSound; ap = assistShowPopup; ww = assistWakeWord; wp = assistWakePhrase; bt = bluetoothProxy; bs = bluetoothScan; rot = rotation; as = androidSaver; it = iconToggles;
             sys = systemBrightness; lw = liftWake; bd = batteryDark;
             ts = tapSound; wb = wasteInBar; wd = wasteDaysAhead;
         }
@@ -394,6 +457,10 @@ public final class ScreenSettings {
             eWakeSound.set(aw != 0);
             eThinkingSound.set(at != 0);
             eShowPopup.set(ap != 0);
+        }
+        if (eBluetooth != null) {
+            eBluetooth.set(bt != 0);
+            eBluetoothScan.set(SCAN_MODES[bs]);
         }
         eNightStart.set(nst);
         eNightEnd.set(nen);
@@ -437,6 +504,8 @@ public final class ScreenSettings {
         if (key.equals("assist_show_popup")) return assistShowPopup;
         if (key.equals("assist_wake_word")) return assistWakeWord;
         if (key.equals("assist_wake_phrase")) return assistWakePhrase;
+        if (key.equals("bluetooth_proxy")) return bluetoothProxy;
+        if (key.equals("bluetooth_scan")) return bluetoothScan;
         if (key.equals("android_saver")) return androidSaver;
         if (key.equals("icon_toggles")) return iconToggles;
         if (key.equals("system_brightness")) return systemBrightness;

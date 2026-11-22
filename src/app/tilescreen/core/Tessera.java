@@ -37,6 +37,8 @@ public final class Tessera {
     public static volatile boolean hasBattery;
     /** The tablet's sound (caps speaker, microphone, echo_cancel): Talk and calls are offered by what these say. */
     public static volatile boolean hasSpeaker = true, hasMicrophone, echoCancel;
+    /** Bluetooth LE that the proxy can use (Android 4.3 and later): the hello says it runs bt_proxy. */
+    public static volatile boolean hasBluetooth;
     /** The battery's level in percent from its last broadcast, -1 before one. */
     public static volatile int batteryLevel = -1;
 
@@ -982,10 +984,11 @@ public final class Tessera {
         a.put("grids", grids);
         a.put("features", features);
         a.put("plugin_api", PLUGIN_API);
-        // The voice assistant only where there is a microphone that gives sound: Tessera offers it there only.
+        // The voice assistant only where there is a microphone that gives sound, the Bluetooth proxy only with Bluetooth LE.
         List<Object> running = new ArrayList<Object>();
         for (Map<String, Object> p : plugins) {
             if ("voice_assist".equals(p.get("id")) && !hasMicrophone) continue;
+            if ("bt_proxy".equals(p.get("id")) && !hasBluetooth) continue;
             running.add(p);
         }
         a.put("plugins", running);

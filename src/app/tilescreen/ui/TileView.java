@@ -3965,6 +3965,7 @@ public final class TileView extends View {
         pictures.forget("full");
         ring = r;
         lastRing = copy(r);
+        ringSound = !r.quiet;
         ringWasTouched = ringEnded = false;
         ringMs = now;
         ringTouchMs = doorArmed = doorSent = 0;
@@ -4025,6 +4026,7 @@ public final class TileView extends View {
         if (!ringEnded && how != null) report(how);
         ringEnded = true;
         ring = null;
+        stopRingStream();
         pictures.forget("ring");
         ui.removeCallbacks(ringTick);
         app.screen().screenSettings.ringing(false);
@@ -4036,6 +4038,7 @@ public final class TileView extends View {
         if (lastRing == null) return;
         if (ring != null) finishRing("closed");
         ring = copy(lastRing);
+        ringSound = !ring.quiet;
         ringWasTouched = true;
         ringEnded = false;
         long now = SystemClock.uptimeMillis();
@@ -4110,7 +4113,9 @@ public final class TileView extends View {
         RectF room = new RectF(pad, bar, w - pad, h - pad);
         RectF keys = null;
         boolean talk = !r.talk.isEmpty() && Voice.uplink != null;
-        if (r.door != 0 || talk) {
+        // Sound where the screen plays (docs/DOORBELL.md "The keys"): the ring's own stream carries the camera's sound.
+        boolean sound = !r.link.isEmpty() && ringMedia != null && Tessera.hasSpeaker;
+        if (r.door != 0 || talk || sound) {
             if (w > h * 1.15f) {
                 keys = new RectF(w - pad - 34 * u, bar, w - pad, h - pad);
                 room.right = keys.left - pad;
@@ -4121,20 +4126,20 @@ public final class TileView extends View {
         }
         drawRingPicture(c, r, room);
         if (keys != null) {
-            RectF door = keys, talkKey = null;
-            if (talk && r.door != 0) {
-                // Both: the door's key and Talk share the column, or the row under a standing picture.
-                boolean column = keys.height() > keys.width();
-                door = column ? new RectF(keys.left, keys.top, keys.right, keys.centerY() - pad / 2)
-                        : new RectF(keys.left, keys.top, keys.centerX() - pad / 2, keys.bottom);
-                talkKey = column ? new RectF(keys.left, keys.centerY() + pad / 2, keys.right, keys.bottom)
-                        : new RectF(keys.centerX() + pad / 2, keys.top, keys.right, keys.bottom);
-            } else if (talk) {
-                talkKey = keys;
-                door = null;
+            // Door, Talk and Sound in that order, sharing the column (or the row under a standing picture) evenly.
+            int n = (r.door != 0 ? 1 : 0) + (talk ? 1 : 0) + (sound ? 1 : 0), at = 0;
+            boolean column = keys.height() > keys.width();
+            float each = ((column ? keys.height() : keys.width()) - (n - 1) * pad) / n;
+            // In a column the keys keep a key's height (the door's own), one under the other from the top.
+            if (column && n > 1) each = Math.min(each, 36 * u);
+            RectF[] slot = new RectF[n];
+            for (int i = 0; i < n; i++) {
+                float from = (column ? keys.top : keys.left) + i * (each + pad);
+                slot[i] = column ? new RectF(keys.left, from, keys.right, from + each) : new RectF(from, keys.top, from + each, keys.bottom);
             }
-            if (door != null) drawDoorKey(c, door, now);
-            if (talkKey != null) drawTalkKey(c, talkKey, r);
+            if (r.door != 0) drawDoorKey(c, slot[at++], now, n > 1);
+            if (talk) drawTalkKey(c, slot[at++], r);
+            if (sound) drawSoundKey(c, slot[at], r);
         }
     }
 
@@ -4281,6 +4286,11 @@ public final class TileView extends View {
 
     /** A live call's media from the add-on; set by the app (CallStream), null where there is none (the harness). */
     public static volatile CallMedia callMedia;
+    /** The doorbell view's stream (the ring's link: the camera's pictures and its sound), set by the app. */
+    public static volatile CallMedia ringMedia;
+    /** The ring's Sound key: on unless the ring opens quiet (the op's `m`); the link its stream opened, empty for none. */
+    private boolean ringSound;
+    private String ringStream = "";
 
     static final int CALL_NONE = 0, CALL_LIST = 1, CALL_OUT = 2, CALL_RING = 3, CALL_LIVE = 4, CALL_ENDED = 5;
     private static final long CALL_END_SHOWN_MS = 2500, HUNG_UP_WAIT_MS = 2500;
@@ -4778,10 +4788,91 @@ public final class TileView extends View {
         }
     }
 
+    /**
+     * The ring's link (`l`, made for this screen as the event came: pictures and, with a speaker, the camera's sound) opens
+     * as the view does, with the room its pictures go in; the Sound key mutes it. Without a link, or once its stream has
+     * ended, the view asks for the camera's pictures as a camera's full view does, without sound.
+     */
+    private void startRingStream(Tessera.Ring r, int bw, int bh) {
+        CallMedia m = ringMedia;
+        if (m == null || r.link.isEmpty() || !ringStream.isEmpty()) return;
+        ringStream = r.link + (r.link.indexOf('?') < 0 ? "?" : "&") + "room=" + bw + "x" + bh;
+        m.mute(!ringSound || ringDucked());
+        m.start(ringStream, new Runnable() {
+            public void run() { postInvalidate(); }
+        });
+    }
+
+    private void stopRingStream() {
+        CallMedia m = ringMedia;
+        if (m != null && !ringStream.isEmpty()) m.stop();
+        ringStream = "";
+    }
+
+    /** Talk is switched (docs/CALLS.md): while the person at the screen speaks, the doorbell's sound waits. */
+    private boolean ringDucked() {
+        Voice.Uplink v = Voice.uplink;
+        return talking && v != null && v.state() == Voice.LIVE && SystemClock.uptimeMillis() - v.lastVoice() < 500;
+    }
+
+    /** The Sound key: on (blue, the speaker's icon) plays the doorbell's sound, a tap turns it off and on. */
+    private void drawSoundKey(Canvas c, RectF k, Tessera.Ring r) {
+        CallMedia m = ringMedia;
+        if (m != null) m.mute(!ringSound || ringDucked());
+        boolean on = ringSound;
+        fill.setColor(on ? Style.BLUE : 0xFF2C313B);
+        float rad = Math.min(k.height(), k.width()) * 0.22f;
+        c.drawRoundRect(k, rad, rad, fill);
+        float iconSize = Math.min(k.height() * 0.32f, 9 * u);
+        boolean wide = k.width() > k.height() * 1.6f;
+        float ix = wide ? k.left + k.width() * 0.22f : k.centerX();
+        float iy = wide ? k.centerY() + iconSize * 0.36f : k.centerY() - iconSize * 0.2f;
+        glyphs.setColor(0xFFFFFFFF);
+        glyphs.setTextSize(iconSize);
+        c.drawText(Icons.sure(getContext(), on ? "volume-high" : "volume-off"), ix, iy, glyphs);
+        text.setTypeface(medium);
+        text.setTextSize(Math.min(4.2f * u, k.height() * 0.16f));
+        text.setColor(0xFFFFFFFF);
+        text.setTextAlign(wide ? Paint.Align.LEFT : Paint.Align.CENTER);
+        float tx = wide ? ix + iconSize * 0.8f : k.centerX(), ty = wide ? k.centerY() + text.getTextSize() * 0.36f : iy + iconSize * 0.9f;
+        c.drawText(fit(on ? "Sound on" : "Sound off", wide ? k.right - tx - 2 * u : k.width() - 2 * u), tx, ty, text);
+        text.setTextAlign(Paint.Align.LEFT);
+        Hit hit = new Hit(k);
+        hit.tap = new Runnable() {
+            public void run() {
+                ringSound = !ringSound;
+                CallMedia cm = ringMedia;
+                if (cm != null) cm.mute(!ringSound || ringDucked());
+                invalidate();
+            }
+        };
+        hits.add(hit);
+    }
+
     private void drawRingPicture(Canvas c, Tessera.Ring r, RectF room) {
         final Tessera tessera = app.screen().tessera;
         final String entity = r.camera;
         final int bw = Math.max(64, Math.round(room.width())), bh = Math.max(64, Math.round(room.height()));
+        startRingStream(r, bw, bh);
+        CallMedia m = ringMedia;
+        Bitmap streamed = m != null && !ringStream.isEmpty() ? m.picture() : null;
+        if (streamed != null || (m != null && !ringStream.isEmpty() && m.running())) {
+            if (streamed != null) {
+                float scale = Math.min(room.width() / streamed.getWidth(), room.height() / streamed.getHeight());
+                float pw = streamed.getWidth() * scale, ph = streamed.getHeight() * scale;
+                RectF dst = new RectF(room.centerX() - pw / 2, room.centerY() - ph / 2, room.centerX() + pw / 2, room.centerY() + ph / 2);
+                c.drawBitmap(streamed, new Rect(0, 0, streamed.getWidth(), streamed.getHeight()), dst, null);
+            } else {
+                text.setTypeface(regular);
+                text.setTextSize(4 * u);
+                text.setColor(0xFFB0B6C0);
+                text.setTextAlign(Paint.Align.CENTER);
+                c.drawText("Connecting to the camera\u2026", room.centerX(), room.centerY(), text);
+                text.setTextAlign(Paint.Align.LEFT);
+                ui.postDelayed(new Runnable() { public void run() { invalidate(); } }, 250);
+            }
+            return;
+        }
         pictures.want("ring", entity + "|" + bw + "x" + bh);
         pictures.pace("ring", 8);
         Bitmap b = pictures.keepFresh(tessera, "ring", null, 4000, new Runnable() {
@@ -4818,7 +4909,7 @@ public final class TileView extends View {
     }
 
     /** The Door key: one tap arms it ("Tap again to open"), a second within five seconds opens the door. */
-    private void drawDoorKey(Canvas c, RectF keys, final long now) {
+    private void drawDoorKey(Canvas c, RectF keys, final long now, boolean filled) {
         boolean armed = doorArmed != 0 && now - doorArmed < ARM_MS;
         int color;
         String icon, line;
@@ -4836,7 +4927,8 @@ public final class TileView extends View {
             line = st.isEmpty() || st.equals("unavailable") || st.equals("unknown") ? "Unavailable" : Character.toUpperCase(st.charAt(0)) + st.substring(1);
         }
         boolean column = keys.height() > keys.width();
-        RectF k = column ? new RectF(keys.left, keys.top + 2 * u, keys.right, keys.top + 2 * u + Math.min(30 * u, keys.height() * 0.4f))
+        RectF k = filled ? new RectF(keys)
+                : column ? new RectF(keys.left, keys.top + 2 * u, keys.right, keys.top + 2 * u + Math.min(30 * u, keys.height() * 0.4f))
                 : new RectF(keys.centerX() - Math.min(45 * u, keys.width() / 2), keys.top, keys.centerX() + Math.min(45 * u, keys.width() / 2), keys.bottom);
         fill.setColor(armed ? withAlpha(Style.ORANGE, 70) : 0xFF22262E);
         c.drawRoundRect(k, 3 * u, 3 * u, fill);

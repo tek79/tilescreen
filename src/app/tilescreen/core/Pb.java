@@ -24,6 +24,16 @@ public final class Pb {
 
         public Out bool(int field, boolean v) { return varint(field, v ? 1 : 0); }
 
+        /** A varint written even when zero, for ESPHome's (force) fields such as a repeated UUID's halves. */
+        public Out force(int field, long v) {
+            tag(field, 0);
+            raw(v);
+            return this;
+        }
+
+        /** sint32 (zigzag), as a Bluetooth advertisement's RSSI. */
+        public Out sint(int field, int v) { return varint(field, ((long) ((v << 1) ^ (v >> 31))) & 0xFFFFFFFFL); }
+
         public Out fixed32(int field, int v) {
             if (v == 0) return this;
             tag(field, 5);

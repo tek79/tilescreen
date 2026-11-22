@@ -61,6 +61,7 @@ public final class MainActivity extends Activity implements Screen.Ui, ScreenSet
         view = new TileView(this, this);
         // A live call's pictures and voice from the add-on (docs/CALLS.md), only while a call is live.
         if (TileView.callMedia == null) TileView.callMedia = new CallStream(this);
+        if (TileView.ringMedia == null) TileView.ringMedia = new CallStream(this, false);
         lift = new Lift(this, new Lift.Moved() {
             public void moved(String how) {
                 app.log("lift to wake: " + how);
@@ -167,7 +168,133 @@ public final class MainActivity extends Activity implements Screen.Ui, ScreenSet
 
     @Override
     protected void onActivityResult(int request, int code, Intent data) {
+        if (request == EXPORT || request == IMPORT) {
+            if (code == RESULT_OK && data != null && data.getData() != null) {
+                if (request == EXPORT) exportTo(data.getData()); else importFrom(data.getData());
+            }
+            return;
+        }
         if (!widgets.result(request, code)) super.onActivityResult(request, code, data);
+    }
+
+    // ----- export and import of the tablet's settings -----
+
+    private static final int EXPORT = 7101, IMPORT = 7102;
+
+    /** Where an export goes before Android 4.4 (no document picker there): the Download folder. */
+    private java.io.File oldDownload() {
+        return new java.io.File(android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS),
+                "tilescreen-" + app.node() + ".json");
+    }
+
+    private void backupDialog() {
+        new AlertDialog.Builder(this)
+                .setTitle("Back up or restore settings")
+                .setMessage("Export saves this tablet's settings to a file: its name, grid and screen shape, the encryption "
+                        + "key, and the screen's Tessera settings (brightness, standby, night, the assistant, the Bluetooth "
+                        + "proxy). Import puts a file like that back and starts the screen again. The file holds the "
+                        + "encryption key, so keep it as you would a password.")
+                .setNegativeButton("Cancel", null)
+                .setNeutralButton("Import", new DialogInterface.OnClickListener() {
+                    public void onClick(DialogInterface d, int w) { pickImport(); }
+                })
+                .setPositiveButton("Export", new DialogInterface.OnClickListener() {
+                    public void onClick(DialogInterface d, int w) { pickExport(); }
+                }).show();
+    }
+
+    private void pickExport() {
+        if (Build.VERSION.SDK_INT >= 19) {
+            Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE)
+                    .setType("application/json").putExtra(Intent.EXTRA_TITLE, "tilescreen-" + app.node() + ".json");
+            try { startActivityForResult(i, EXPORT); return; } catch (Exception e) { app.log("export: no document picker (" + e + ")"); }
+        }
+        java.io.File f = oldDownload();
+        try {
+            f.getParentFile().mkdirs();
+            java.io.FileOutputStream out = new java.io.FileOutputStream(f);
+            out.write(app.exportSettings().getBytes("UTF-8"));
+            out.close();
+            say("Exported", "Saved to " + f.getPath());
+        } catch (Exception e) {
+            say("Export failed", String.valueOf(e));
+        }
+    }
+
+    private void pickImport() {
+        if (Build.VERSION.SDK_INT >= 19) {
+            Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*");
+            try { startActivityForResult(i, IMPORT); return; } catch (Exception e) { app.log("import: no document picker (" + e + ")"); }
+        }
+        java.io.File f = oldDownload();
+        try {
+            confirmImport(readAll(new java.io.FileInputStream(f)));
+        } catch (Exception e) {
+            say("Import failed", "Put the exported file at " + f.getPath() + " first (" + e + ")");
+        }
+    }
+
+    private void exportTo(android.net.Uri uri) {
+        try {
+            java.io.OutputStream out = getContentResolver().openOutputStream(uri);
+            out.write(app.exportSettings().getBytes("UTF-8"));
+            out.close();
+            app.log("export: settings saved");
+            say("Exported", "This tablet's settings are saved.");
+        } catch (Exception e) {
+            say("Export failed", String.valueOf(e));
+        }
+    }
+
+    private void importFrom(android.net.Uri uri) {
+        try {
+            confirmImport(readAll(getContentResolver().openInputStream(uri)));
+        } catch (Exception e) {
+            say("Import failed", String.valueOf(e));
+        }
+    }
+
+    private void confirmImport(final String text) {
+        String what = App.describeExport(text);
+        if (what == null) {
+            say("Import failed", "That file isn't a Tile Screen export.");
+            return;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("Import these settings?")
+                .setMessage(what + ".\n\nThis tablet's own settings are replaced, the encryption key too, and the screen "
+                        + "starts again. If the file came from another tablet, this one becomes that screen in Home "
+                        + "Assistant: don't run both at once.")
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Import", new DialogInterface.OnClickListener() {
+                    public void onClick(DialogInterface d, int w) {
+                        if (!app.importSettings(text)) {
+                            say("Import failed", "The file couldn't be read.");
+                            return;
+                        }
+                        app.screen().setUi(MainActivity.this);
+                        applyOrientation();
+                        view.changed();
+                    }
+                }).show();
+    }
+
+    private static String readAll(java.io.InputStream in) throws java.io.IOException {
+        try {
+            java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+            byte[] buf = new byte[8192];
+            for (int n; (n = in.read(buf)) > 0; ) {
+                out.write(buf, 0, n);
+                if (out.size() > 1 << 20) throw new java.io.IOException("too large for an export");
+            }
+            return out.toString("UTF-8");
+        } finally {
+            in.close();
+        }
+    }
+
+    private void say(String title, String message) {
+        new AlertDialog.Builder(this).setTitle(title).setMessage(message).setPositiveButton("OK", null).show();
     }
 
     // ----- what the glass shows: the tiles, the widget page, or Android's launcher -----
@@ -756,6 +883,13 @@ public final class MainActivity extends Activity implements Screen.Ui, ScreenSet
             });
             box.addView(forget);
         }
+
+        android.widget.Button backup = new android.widget.Button(this);
+        backup.setText("Back up or restore settings");
+        backup.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) { backupDialog(); }
+        });
+        box.addView(backup);
 
         android.widget.Button system = new android.widget.Button(this);
         system.setText("Open Android settings");

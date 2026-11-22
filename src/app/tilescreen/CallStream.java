@@ -18,16 +18,19 @@ import java.net.URI;
 import app.tilescreen.ui.CallMedia;
 
 /**
- * A call's stream from the add-on (live_stream.py): multipart parts, each a JPEG of the other's picture or a piece of its
+ * A call's stream from the add-on (live_stream.py), or a doorbell view's (see the second constructor): multipart parts, each a JPEG of the other's picture or a piece of its
  * voice (`audio/x-s16le;rate=16000`, X-Sound: talk). The voice plays on Android's voice path with its echo canceller's
  * reference, after a run-up of 200 ms, which kept a call's voice whole on the add-on's measurements (docs/CALLS.md); a
  * voice that falls more than a second behind is let go by the add-on (live_stream.SOUND_QUEUE), so it is never late. Nothing of it runs outside a call.
  */
 final class CallStream implements CallMedia {
     private static final int RATE = 16000;
-    private static final int RUN_UP = RATE * 2 / 5;      // 200 ms of bytes
-    private static final int MOST_WAITING = RATE * 2;    // a second of bytes
+    /** A call's voice: 200 ms of run-up, a second at most waiting. A doorbell's sound: 400 ms, two seconds. */
+    private final int runUp, mostWaiting;
+    private final boolean call;
+    private final String tag;
     private final Context context;
+    private volatile boolean muted, running;
     private volatile Thread worker;
     private volatile Socket socket;
     private volatile boolean stopping;
@@ -36,7 +39,23 @@ final class CallStream implements CallMedia {
     private int savedMode = -1;
     private boolean savedSpeaker;
 
-    CallStream(Context c) { context = c.getApplicationContext(); }
+    CallStream(Context c) { this(c, true); }
+
+    /**
+     * `call`: a call's stream, its voice on Android's voice path. Else a doorbell's view (the ring's link, live_stream.py
+     * with the camera's sound): the sound plays on the media stream, as Tessera's view plays it on the speaker.
+     */
+    CallStream(Context c, boolean call) {
+        context = c.getApplicationContext();
+        this.call = call;
+        runUp = call ? RATE * 2 / 5 : RATE * 4 / 5;
+        mostWaiting = call ? RATE * 2 : RATE * 4;
+        tag = call ? "call" : "doorbell";
+    }
+
+    public void mute(boolean on) { muted = on; }
+
+    public boolean running() { return running; }
 
     public Bitmap picture() { return picture; }
 
@@ -46,7 +65,8 @@ final class CallStream implements CallMedia {
         stop();
         stopping = false;
         picture = null;
-        voicePath(true);
+        running = true;
+        if (call) voicePath(true);
         Thread t = new Thread(new Runnable() {
             public void run() { read(link, changed); }
         }, "call-stream");
@@ -66,7 +86,8 @@ final class CallStream implements CallMedia {
             try { t.join(1500); } catch (InterruptedException ignored) {}
         }
         picture = null;
-        voicePath(false);
+        running = false;
+        if (call) voicePath(false);
     }
 
     /** Android's voice path for a call: its echo canceller hears what plays, and the loudspeaker plays it. */
@@ -106,7 +127,7 @@ final class CallStream implements CallMedia {
             InputStream in = new BufferedInputStream(s.getInputStream(), 16384);
             String status = line(in);
             if (status == null || !status.contains(" 200")) {
-                App.get().log("call: the stream said " + status);
+                App.get().log(tag + ": the stream said " + status);
                 return;
             }
             while (true) {
@@ -115,8 +136,8 @@ final class CallStream implements CallMedia {
                 if (h.isEmpty()) break;
             }
             int min = AudioTrack.getMinBufferSize(RATE, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT);
-            track = new AudioTrack(AudioManager.STREAM_VOICE_CALL, RATE, AudioFormat.CHANNEL_OUT_MONO,
-                    AudioFormat.ENCODING_PCM_16BIT, Math.max(min, MOST_WAITING), AudioTrack.MODE_STREAM);
+            track = new AudioTrack(call ? AudioManager.STREAM_VOICE_CALL : AudioManager.STREAM_MUSIC, RATE,
+                    AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT, Math.max(min, mostWaiting), AudioTrack.MODE_STREAM);
             boolean playing = false;
             int waiting = 0;
             long pictures = 0, sounds = 0;
@@ -157,11 +178,21 @@ final class CallStream implements CallMedia {
                     int whole = length & ~1;
                     heard = SystemClock.uptimeMillis();
                     sounds++;
+                    if (muted) {
+                        // Off: what waits goes, and the next sound starts with its run-up again.
+                        if (playing || waiting > 0) {
+                            track.pause();
+                            track.flush();
+                            playing = false;
+                            waiting = 0;
+                        }
+                        continue;
+                    }
                     if (!playing) {
-                        // The run-up: a little voice waits before the first plays, so a late part finds some left.
+                        // The run-up: a little sound waits before the first plays, so a late part finds some left.
                         track.write(body, 0, whole);
                         waiting += whole;
-                        if (waiting >= RUN_UP) {
+                        if (waiting >= runUp) {
                             track.play();
                             playing = true;
                         }
@@ -170,10 +201,11 @@ final class CallStream implements CallMedia {
                     }
                 }
             }
-            App.get().log("call: stream ended, " + pictures + " pictures, " + sounds + " parts of voice");
+            App.get().log(tag + ": stream ended, " + pictures + " pictures, " + sounds + " parts of sound");
         } catch (Exception e) {
-            if (!stopping) App.get().log("call: stream: " + e);
+            if (!stopping) App.get().log(tag + ": stream: " + e);
         } finally {
+            running = false;
             if (track != null) {
                 try { track.stop(); } catch (Exception ignored) {}
                 track.release();
