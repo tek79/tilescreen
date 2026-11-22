@@ -71,6 +71,146 @@ public class RenderMain {
         t.start();
     }
 
+    /**
+     * A Bluetooth radio on a desktop, for test/ble_test.py: two devices advertise every 200 ms; one of them (a thermometer
+     * at AA:BB:CC:00:00:01) takes connections, with the battery service (0x180F: its level 0x2A19 reads 87 and notifies,
+     * a CCCD beside it) and a writable characteristic.
+     */
+    static void fakeBluetooth(final Screen screen) {
+        Tessera.hasBluetooth = true;
+        screen.screenSettings.bluetoothToggles(screen.device);
+        final BleProxy proxy = new BleProxy(new EspDevice.Logger() { public void log(String l) { System.out.println("[log] " + l); } });
+        final long dev = BleProxy.address("AA:BB:CC:00:00:01"), other = BleProxy.address("AA:BB:CC:00:00:02");
+        final java.util.Set<Integer> notifying = java.util.Collections.synchronizedSet(new java.util.HashSet<Integer>());
+        final java.util.Set<Long> connected = java.util.Collections.synchronizedSet(new java.util.HashSet<Long>());
+        final boolean[] scanning = {false};
+        final byte[][] value = {{87}, {}};
+        proxy.setRadio(new BleProxy.Radio() {
+            public boolean startScan() { scanning[0] = true; System.out.println("[radio] scan"); return true; }
+            public void stopScan() { scanning[0] = false; System.out.println("[radio] scan stops"); }
+            public String problem() { return ""; }
+            public void connect(final long a, int type) {
+                System.out.println("[radio] connect " + BleProxy.text(a) + " type " + type);
+                new Thread(new Runnable() { public void run() {
+                    try { Thread.sleep(200); } catch (InterruptedException e) { return; }
+                    if (a == dev) { connected.add(a); proxy.connected(a, 247); } else proxy.disconnected(a, 133);
+                } }).start();
+            }
+            public void disconnect(long a) { connected.remove(a); notifying.clear(); proxy.disconnected(a, 0); }
+            public java.util.List<BleProxy.Service> services(long a) {
+                if (!connected.contains(a)) return null;
+                BleProxy.Service s = new BleProxy.Service(uuid16(0x180F), LOW, 0x10);
+                BleProxy.Characteristic level = new BleProxy.Characteristic(uuid16(0x2A19), LOW, 0x12, 2 | 16);
+                level.descriptors.add(new BleProxy.Descriptor(uuid16(0x2902), LOW, 0x13));
+                s.characteristics.add(level);
+                s.characteristics.add(new BleProxy.Characteristic(uuid16(0x2A00), LOW, 0x15, 8));
+                return java.util.Collections.singletonList(s);
+            }
+            public void read(long a, int h) { if (h == 0x12) proxy.readDone(a, h, value[0], 0); else proxy.readDone(a, h, null, 2); }
+            public void write(long a, int h, byte[] d, boolean r) { value[1] = d; System.out.println("[radio] write " + h + " " + d.length + " bytes"); proxy.writeDone(a, h, 0, r); }
+            public void readDescriptor(long a, int h) { proxy.readDone(a, h, new byte[]{(byte) (notifying.isEmpty() ? 0 : 1), 0}, 0); }
+            public void writeDescriptor(long a, int h, byte[] d) {
+                System.out.println("[radio] cccd " + (d.length > 0 ? d[0] : -1));
+                if (d.length > 0 && d[0] != 0) notifying.add(0x12); else notifying.remove(0x12);
+                proxy.writeDone(a, h, 0, true);
+            }
+            public void notify(long a, int h, boolean on) { proxy.notifyDone(a, h, 0); }
+            public void pair(long a) { proxy.paired(a, true, 0); }
+            public void unpair(long a) { proxy.unpaired(a, true, 0); }
+            public void clearCache(long a) { proxy.cacheCleared(a, true, 0); }
+        });
+        screen.device.bluetooth = proxy;
+        screen.device.bluetoothMac = "11:22:33:44:55:66";
+        Runnable apply = new Runnable() {
+            public void run() {
+                boolean on = screen.screenSettings.bluetoothProxy();
+                screen.device.bluetoothFeatures = on ? BleProxy.FEATURES : 0;
+                proxy.enable(on);
+            }
+        };
+        apply.run();
+        screen.screenSettings.onBluetooth = new Runnable() {
+            public void run() {
+                boolean on = screen.screenSettings.bluetoothProxy();
+                screen.device.bluetoothFeatures = on ? BleProxy.FEATURES : 0;
+                proxy.enable(on);
+                screen.device.reconnectClients();
+            }
+        };
+        Thread air = new Thread(new Runnable() { public void run() {
+            int n = 0;
+            while (true) {
+                try { Thread.sleep(200); } catch (InterruptedException e) { return; }
+                if (!scanning[0]) continue;
+                // Flags, a name "Thermo", and a heart rate service UUID; then the other device's manufacturer data.
+                proxy.advertisement(dev, -60 - (n % 5), 0, new byte[]{2, 1, 6, 7, 9, 'T', 'h', 'e', 'r', 'm', 'o', 3, 3, 0x0D, 0x18});
+                proxy.advertisement(other, -80, 1, new byte[]{5, (byte) 0xFF, 0x4C, 0x00, 1, 2});
+                if (notifying.contains(0x12) && n % 5 == 0) proxy.notification(dev, 0x12, new byte[]{(byte) (80 + n % 10)});
+                n++;
+            }
+        } });
+        air.setDaemon(true);
+        air.start();
+    }
+
+    /** The doorbell view's stream on a desktop: reads the multipart as CallStream does, counts its sound while unmuted. */
+    static final class DeskStream implements app.tilescreen.ui.CallMedia {
+        volatile android.graphics.Bitmap picture;
+        volatile boolean muted, running;
+        volatile long heard;
+        volatile int played, dropped;
+        volatile java.net.Socket socket;
+        public void start(final String link, final Runnable changed) {
+            System.out.println("[ring-stream] open " + link + (muted ? " (muted)" : ""));
+            running = true;
+            new Thread(new Runnable() { public void run() {
+                try {
+                    java.net.URI u = new java.net.URI(link);
+                    java.net.Socket s = new java.net.Socket(u.getHost(), u.getPort());
+                    socket = s;
+                    s.getOutputStream().write(("GET " + u.getRawPath() + "?" + u.getRawQuery() + " HTTP/1.1\r\nHost: x\r\n\r\n").getBytes("US-ASCII"));
+                    java.io.DataInputStream in = new java.io.DataInputStream(new java.io.BufferedInputStream(s.getInputStream()));
+                    String line;
+                    while ((line = readLine(in)) != null && !line.isEmpty()) {}
+                    while (true) {
+                        line = readLine(in);
+                        if (line == null) break;
+                        if (!line.startsWith("--")) continue;
+                        String type = ""; int len = 0;
+                        while ((line = readLine(in)) != null && !line.isEmpty()) {
+                            String l = line.toLowerCase();
+                            if (l.startsWith("content-type:")) type = line.substring(13).trim();
+                            if (l.startsWith("content-length:")) len = Integer.parseInt(line.substring(15).trim());
+                        }
+                        byte[] b = new byte[len];
+                        in.readFully(b);
+                        if (type.startsWith("image/")) { picture = android.graphics.BitmapFactory.decodeByteArray(b, 0, len); changed.run(); }
+                        else if (type.startsWith("audio/")) { heard = System.currentTimeMillis(); if (muted) dropped++; else played++; }
+                    }
+                } catch (Exception e) {
+                    // closed
+                } finally {
+                    running = false;
+                    System.out.println("[ring-stream] ended: " + played + " parts played, " + dropped + " muted");
+                }
+            } }).start();
+        }
+        static String readLine(java.io.DataInputStream in) throws java.io.IOException {
+            StringBuilder b = new StringBuilder();
+            int c;
+            while ((c = in.read()) >= 0) { if (c == '\n') break; if (c != '\r') b.append((char) c); }
+            return c < 0 && b.length() == 0 ? null : b.toString();
+        }
+        public void stop() { try { if (socket != null) socket.close(); } catch (Exception ignored) {} picture = null; }
+        public android.graphics.Bitmap picture() { return picture; }
+        public boolean hearing() { return System.currentTimeMillis() - heard < 600; }
+        public void mute(boolean on) { if (on != muted) System.out.println("[ring-stream] " + (on ? "muted" : "sound on")); muted = on; }
+        public boolean running() { return running; }
+    }
+
+    static final long LOW = 0x800000805F9B34FBL;
+    static long uuid16(int u) { return ((long) u << 32) | 0x1000L; }
+
     public static void main(String[] a) throws Exception {
         final int port = Integer.parseInt(a[0]);
         int w = Integer.parseInt(a[1]), h = Integer.parseInt(a[2]);
@@ -110,6 +250,8 @@ public class RenderMain {
             };
             if (System.getenv("WAKE") != null) wake(app.screen, assist, System.getenv("WAKE"));
         }
+        if (System.getenv("BLE") != null) fakeBluetooth(app.screen);
+        TileView.ringMedia = new DeskStream();
         final TileView[] view = new TileView[1];
         final app.tilescreen.ui.SaverView[] saverView = new app.tilescreen.ui.SaverView[1];
         app.screen.setUi(new Screen.Ui() {
