@@ -121,7 +121,7 @@ final class WakeListener {
     }
 
     private boolean wanted() {
-        return !closed && settings.assistWakeWord() && (visible || dreaming || SystemClock.uptimeMillis() - hiddenAt < 1500) && taken == 0 && device.voiceReady()
+        return !closed && settings.assistWakeWord() && settings.microphone() && (visible || dreaming || SystemClock.uptimeMillis() - hiddenAt < 1500) && taken == 0 && device.voiceReady()
                 // a question that opened the microphone itself (Wake word was off) keeps it until it is done
                 && (live || !assist.busy());
     }

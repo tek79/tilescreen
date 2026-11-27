@@ -601,7 +601,7 @@ final class ScreenCamera implements android.hardware.Camera.PreviewCallback, Sen
             boolean on = pm == null || pm.isScreenOn();
             if (on && !app.dreaming()) return;
         }
-        settings.wakeBy("motion");
+        settings.sensed("motion");
     }
 
     public void lightChanged() {

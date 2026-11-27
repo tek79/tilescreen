@@ -21,7 +21,7 @@ import app.tilescreen.core.Json;
  * back to the real one. Range and step are the entity's (min_temp, max_temp, target_temp_step).
  */
 final class ThermoDialPlugin extends PluginKit.Plugin {
-    ThermoDialPlugin() { super("thermo_dial", "0.2.0"); }
+    ThermoDialPlugin() { super("thermo_dial", "0.3.1"); }
 
     @Override
     String[] tiles() { return new String[]{"dial"}; }
@@ -154,25 +154,71 @@ final class ThermoDialPlugin extends PluginKit.Plugin {
         c.host.perform("climate.set_hvac_mode", data, null);
     }
 
-    // ---- the tile: the name, the target large, and - mode + under it ----
+    // ---- the tile (0.3.1): the name, the target large with "Now 19.8°" and the state's icon under it, and the keys:
+    // - mode + at the bottom, or - and + at the sides of a tile two cells wide and one high ----
+
+    /** Heating in Home Assistant's amber, cooling in the screen's blue; else none (mood_tone). */
+    private static int tone(String mood, int normal) {
+        return mood.equals("heating") ? 0xFFFFC107 : mood.equals("cooling") ? 0xFF2196F3 : normal;
+    }
 
     @Override
     boolean drawTile(String tile, final PluginKit.Ctx c) {
         if (!tile.equals("dial")) return false;
         final Dial d = read(c);
         final boolean off = unavailable(d);
+        final String m = mood(d);
         RectF b = c.box;
-        float keyH = Math.max(9 * c.mm, c.fs * 2.4f);
-        boolean keys = b.width() > c.fs * 9 && b.height() >= c.fs * 1.3f + c.fs * 2.2f + keyH + c.u;
-        c.words(c.fit(c.tile.name, b.width(), c.text), b.left, b.top + c.fs, c.fs * 0.9f, c.dim, c.regular, Paint.Align.LEFT);
-        float top = b.top + c.fs * 1.3f, bottom = keys ? b.bottom - keyH - c.u : b.bottom;
+        float keyH = Math.max(9 * c.mm, c.fs * 2.4f), gap = c.u;
+        boolean wide = b.width() > b.height() * 1.6f, oneRow = b.height() < c.fs * 7.5f;
+        // Wide and one cell high: - at the left, + at the right, the number between them (side_layout).
+        float sideW = Math.max(12 * c.mm, c.fs * 3.2f);
+        boolean side = wide && oneRow && b.width() >= 3 * sideW + 2 * gap;
+        boolean keys = !side && (b.width() > c.fs * 9 || b.height() > c.fs * 7.5f)
+                && b.height() >= c.fs * 1.3f + c.fs * 2.2f + keyH + c.u;
+        float bodyH = c.fs * 1.3f, valueH = c.fs * 2.6f, infoH = c.fs * 1.3f;
+        float midL = side ? b.left + sideW + gap : b.left, midR = side ? b.right - sideW - gap : b.right;
+        boolean nameFits = !side || b.height() >= bodyH + valueH + infoH + 2 * gap;
+        if (nameFits) {
+            c.words(c.fit(c.tile.name, midR - midL, c.text), side ? (midL + midR) / 2 : b.left, b.top + c.fs, c.fs * 0.9f, c.dim,
+                    c.regular, side ? Paint.Align.CENTER : Paint.Align.LEFT);
+        }
+        float top = nameFits ? b.top + bodyH : b.top, bottom = keys ? b.bottom - keyH - c.u : b.bottom;
+        boolean info = bottom - top >= valueH + gap + infoH;
         String value = !off && d.shown != null ? format(d.shown) + "°" : "-";
-        float size = Math.min((bottom - top) * 0.75f, c.fs * 3.2f);
-        while (size > c.fs && c.width(value, size, c.light) > b.width()) size -= 1;
-        c.words(value, b.centerX(), top + (bottom - top) / 2 + size * 0.36f, size, off ? c.dim : c.ink, c.light, Paint.Align.CENTER);
-        if (keys) {
-            final int count = d.modes.size() >= 2 ? 3 : 2;
-            float gap = c.u, kw = (b.width() - gap * (count - 1)) / count;
+        float size = Math.min((bottom - top - (info ? infoH : 0)) * 0.85f, c.fs * 3.2f);
+        while (size > c.fs && c.width(value, size, c.light) > midR - midL) size -= 1;
+        float block = size + (info ? gap + infoH : 0);
+        float y0 = top + Math.max(0, (bottom - top - block) / 2);
+        float cx = (midL + midR) / 2;
+        c.words(value, cx, y0 + size * 0.86f, size, off ? c.dim : tone(m, c.ink), c.light, Paint.Align.CENTER);
+        if (info && !off) {
+            // "Now 19.8°" and the state's icon as one row, centred under the number.
+            String now = d.current != null ? "Now " + format(d.current) + "°" : "";
+            String icon = m.equals("heating") ? "fire" : m.equals("cooling") ? "snowflake" : m.equals("off") ? "power-standby"
+                    : m.equals("idle") ? "sleep" : null;
+            float nw = now.isEmpty() ? 0 : c.width(now, c.fs * 0.9f, c.regular), iw = icon == null ? 0 : c.fs * 1.2f;
+            float g = nw > 0 && iw > 0 ? c.u * 1.5f : 0, x = cx - (nw + g + iw) / 2, iy = y0 + size + gap + infoH * 0.75f;
+            if (nw > 0) c.words(now, x, iy, c.fs * 0.9f, tone(m, c.dim), c.regular, Paint.Align.LEFT);
+            if (icon != null) c.icon(icon, x + nw + g + iw / 2, iy, c.fs * 1.05f, tone(m, c.ink));
+        }
+        if (side) {
+            float kh = Math.min(14 * c.mm, b.height()), ky = b.centerY() - kh / 2;
+            for (int i = 0; i < 2; i++) {
+                final int dir = i == 0 ? -1 : 1;
+                RectF k = i == 0 ? new RectF(b.left, ky, b.left + sideW, ky + kh) : new RectF(b.right - sideW, ky, b.right, ky + kh);
+                c.fill.setColor(c.raised);
+                c.c.drawRoundRect(k, Math.min(k.width(), k.height()) / 2, Math.min(k.width(), k.height()) / 2, c.fill);
+                c.words(i == 0 ? "-" : "+", k.centerX(), k.centerY() + c.fs * 1.3f * 0.36f, c.fs * 1.3f, off ? c.dim : c.ink,
+                        c.medium, Paint.Align.CENTER);
+                if (!off) c.host.tap(k, new Runnable() {
+                    public void run() { bump(c, d, dir); }
+                });
+            }
+        } else if (keys) {
+            // The mode key needs a tile two cells wide; a narrow one has - and + only.
+            final int count = d.modes.size() >= 2 && b.width() > c.fs * 9 ? 3 : 2;
+            float kw = (b.width() - gap * (count - 1)) / count;
             int slot = 0;
             for (int i = 0; i < 3; i++) {
                 if (i == 1 && count == 2) continue;
@@ -248,7 +294,7 @@ final class ThermoDialPlugin extends PluginKit.Plugin {
                     c.regular, Paint.Align.CENTER);
         }
         String word = m.equals("unavailable") ? "Unavailable" : Character.toUpperCase(m.charAt(0)) + m.substring(1);
-        String icon = m.equals("heating") ? "fire" : m.equals("cooling") ? "snowflake" : m.equals("off") ? "power" : null;
+        String icon = m.equals("heating") ? "fire" : m.equals("cooling") ? "snowflake" : m.equals("off") ? "power" : m.equals("idle") ? "sleep" : null;
         float sy = ring.centerY() + big * 0.2f + c.fs * 3.1f;
         float ww = c.width(word, c.fs * 0.95f, c.regular), iw = icon == null ? 0 : c.fs * 1.3f;
         float x0 = ring.centerX() - (ww + iw) / 2;

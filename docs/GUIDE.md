@@ -8,7 +8,7 @@ It is built for low-memory tablets such as the 5th-gen Fire 7 running LineageOS.
 view and no Home Assistant app inside it: a small native app draws the tiles itself. It should run
 on Android 4.2 and later.
 
-This guide covers version 0.24.0.
+This guide covers version 0.25.2.
 
 ## 1. Install it on the tablet
 
@@ -58,7 +58,9 @@ layout through restarts.
 - **Tap** a tile to toggle it, run it, or open its card, as on a Tessera panel.
   **Long-press** any tile for its card (sliders, modes, buttons).
 - **Swipe** left or right to change pages, or use the Previous and Next keys in the bar at the bottom.
-  The house icon at top left goes back to the home page.
+  The house icon at top left goes back to the home page (on every page that has a Home control, Home included).
+  **Hold it** for half a second and the screen goes to standby at once, with its screensaver, also with Auto
+  standby off (Tessera 0.4.104).
 - **Long-press the title** at top left, or **swipe down from the top edge** (with Swipe between pages on), for the
   screen's settings page, as on a Tessera panel: Brightness, Night, Screen and This screen. A `screen.settings` tile
   and Home Assistant's `esphome.<name>_open_settings` open it too.
@@ -98,9 +100,13 @@ device. Change them in Tessera (open the screen, then **Settings**) or from Home
 - **Loop pages** (on by default): after the last page comes the first, and before the first the last, by swipe and by
   the Previous and Next keys
 
-The **Wake** and **Sleep** buttons are for automations. Wake lights a dimmed screen, and on a lit one
-the standby time starts again from then. Sleep dims the screen now, without the screensaver, even with
-Auto standby off, until a tap, Wake or an alert. An alert always wakes the screen.
+The **Wake**, **Sleep** and **Motion** buttons are for automations. Wake lights a dimmed screen, and on a lit one
+the standby time starts again from then. Sleep sends the screen to standby now, with its screensaver as every standby
+has it, even with Auto standby off, and closes an alert that is up; it holds until a tap, Wake or an alert.
+**Motion** wakes as Wake does, but after a standby by hand (Sleep, or the house icon held) it waits until a minute has
+passed without motion, so someone walking away from the screen doesn't light it again; an automation on a motion
+sensor should press Motion instead of Wake. The camera's motion (Screen camera) and Lift to wake follow the same rule.
+An alert always wakes the screen.
 
 The clock on the screensaver has Tessera's faces: Digital, **Glass**, **Classic** and **Bauhaus**, with the
 look (dark, light, or following Dark mode), the numbers on Glass and the seconds hand chosen in Tessera's
@@ -154,10 +160,10 @@ the status bar and dims the navigation bar instead. And landscape and portrait t
 Auto-rotate is off, since Android 4.2 has no setting to tell the app otherwise. Old tablets are slow too, so live
 camera tiles may update less often.
 
-Drawn: lights (with their colour, white shade and effects page: effect, palette, preset, speed and the like, and their presets), switches, fans, input booleans, scenes, scripts, buttons, automations, covers
-(open/stop/close, position, tilt), climate (−/+, the big two-row setpoint, the mode bar), humidifiers,
+Drawn: lights (with their colour, white shade and effects page: effect, palette, preset, speed and the like, and their presets; a light group's lamps on a page of their own behind the lamps key), switches, fans, input booleans, scenes, scripts and buttons (with when they last ran: "Last 14:05", "Yesterday 9:15 PM", "Never run", and "Running…" while a script runs), automations (a tap switches one on or off and a hold runs its actions, the other way round when the tile is set to run them), covers
+(open/stop/close, position, tilt), climate (−/+, the big two-row setpoint, the mode bar, and Fan and Swing on the card for a device that has them), humidifiers,
 calendars (every view of the tile, the full screen with Up next, Day, Week and Month, Free or busy, and a room's sign with its booking keys), sensors with the meter display (ring, tape, bar), sensors and binary sensors (their card shows the history of the last hour, day or week, a line for numbers and a timeline for states), numbers and selects, media players (volume and mute, playback keys,
-power and input in the card, its library behind the key at the top right), favourite tiles (a tap plays or pauses what the favourite holds), locks, robot vacuums (the keys the robot has on its tile, or on a tile two rows high its map, rooms or routines; its card with the map, cleaning by area, routines, and suction and mop), template tiles, alarm panels, timers, people, the sun, weather, the
+power and input in the card, the title, artist and album with the track's bar to drag to another moment, shuffle and repeat, its library behind the key at the top right), favourite tiles (a tap plays or pauses what the favourite holds), locks (a tap locks; a locked one unlocks on a second tap within five seconds, and the card's Unlock and Open door ask for theirs too, "Really open?"; a tile set to lock only never unlocks), robot vacuums (the keys the robot has on its tile, or on a tile two rows high its map, rooms or routines; its card with the map, cleaning by area, routines, and suction and mop), template tiles, alarm panels, timers, people, the sun (its rise and set, and the sun's path on a wide tile), weather (the forecast on a wide tile: the days beside the weather now, or on a taller one the week with its temperature through the hours; the card with Daily and Hourly), the
 clock tile (dial, analog, flip and digital), the energy card (live power from Home Assistant's Energy settings, moving dots or calm lines; a tap on a circle opens its sensor's history), "go to page" tiles, camera tiles set to **Live picture** (streaming when set to Live), players set to **Album cover**,
 people set to **Map**, a camera full size in its card, pastel tile colors, top bar items, multiple
 pages, hidden detail pages, custom tap actions, alerts, the doorbell, the screensaver (with a player's play and volume keys over its cover), and Tessera's screen settings.
@@ -208,7 +214,7 @@ group, or pick its face in the Screensaver card.
 | Flip clock | 0.1.0 | A face of the screensaver's clock: hours and minutes on two flip cards, a seconds dot, the date and the outside temperature. Pick it under Face in the Clock's drawer of the Screensaver card. |
 | Tap sound | 0.2.1 | A soft tick for every tap, a softer one for each step of a dragged slider or a held key, on Android's system volume. Switch it off with **Tap sound** (the screen's settings page, or its switch in Home Assistant). Tessera offers it only to a screen whose board has a speaker, which every board the tablet reports has. |
 | Waste collection | 1.0.7 | A tile with the next collection ("Paper", "Tomorrow"), a card with four weeks of collections (a tap on the tile, or a calendar tile whose tap is set to it), and a top bar item ("Tomorrow: Paper") with **Waste in top bar** and **Waste days ahead**. The top bar reads the calendar of the first Next collection tile of the layout. |
-| Thermo dial | 0.2.0 | A climate tile with the target large and - / mode / + keys, and a card with a dial to drag; the target goes to Home Assistant when you let go (the keys after 600 ms). |
+| Thermo dial | 0.3.1 | A climate tile with the target large, "Now" and the state's icon under it (amber while heating, blue while cooling), and - / mode / + keys; two cells wide and one high, - and + at the sides; one cell wide and two high, - and + at the bottom. A card with a dial to drag; the target goes to Home Assistant when you let go (the keys after 600 ms). |
 | AV wall panel controls | 0.1.1 | Five tiles of keys: transport, D-pad, volume or channel, a number pad and a selector grid. Each key runs the action typed for it in the editor, such as `remote.send_command command=UP`. |
 | Bluetooth proxy | 0.2.0 | ESPHome's Bluetooth proxy on the tablet; see **The Bluetooth proxy**. Only on a tablet with Bluetooth LE (Android 4.3 and later). |
 | Screen camera | 0.7.3 | The tablet's camera as a camera in Home Assistant, with **Light level** and **Motion**, and with its part **Video** live video with sound; see **Screen camera**. Only on a tablet with a camera. |
@@ -340,6 +346,12 @@ phrase at a time, so leave **Wake word 2** on *No wake word*.
   is too much, leave Wake word off there; a tap still asks.
 - **The log** (Tablet settings → Log) shows *wake: listening for "Okay Nabu"*, each phrase it heard with how sure it was,
   and why it rests.
+
+### The Microphone switch
+
+On a tablet with a microphone, **Microphone** (on the settings page and in Home Assistant, on to start, as on Tessera's
+screens with audio) turns all listening off: the wake word rests, and a question, Talk, a call and the camera's video
+hear silence until it is on again. The tablet keeps the setting through a restart.
 
 ### Sharing the microphone
 
@@ -618,6 +630,10 @@ on a desktop JVM against the real clients:
 - `test/alarm_test.py`, `test/call_test.py` and `test/assist_test.py` drive the alarm keypad, calls between screens and
   the voice assistant with the add-on's code and `aioesphomeapi`.
 - `test/doorbell_sound_test.py` rings with a stream of pictures and sound and drives the Sound key.
+- `test/weather.py` (forecast tiles, the week and the card's Daily and Hourly), `test/runs.py` (a lock's second tap,
+  automations, last-run lines), `test/media_card.py` (title, seek bar, shuffle and repeat), `test/lamps.py` (a light
+  group's lamps, a climate card's Fan and Swing), `test/sun.py` (the sun path) and `test/thermo_tiles.py` (the dial's
+  tile shapes) send the add-on's own messages and extras, built with its own code.
 - `test/RtspMain.java` serves an H.264 file and a tone through the video's server, for `ffmpeg` and `go2rtc` (as Home
   Assistant plays it) to play: both tracks, the password, a still.
 - `test/camera_test.py` drives Screen camera as Home Assistant does (the entities, a picture, a stream, the settings),

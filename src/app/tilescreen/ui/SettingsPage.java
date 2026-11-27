@@ -144,6 +144,8 @@ final class SettingsPage {
             // The settings of the plugins this app draws (tap_sound, waste_collection).
             out.add(row(TOGGLE, "Tap sound", "tap_sound"));
             out.add(row(TOGGLE, "Waste in top bar", "waste_in_bar"));
+            // Tessera's Microphone (Extras), where the tablet has one: off, everything that listens hears silence.
+            if (App.get().screen().screenSettings.hasMicrophoneSwitch()) out.add(row(TOGGLE, "Microphone", "microphone"));
             // The voice assistant's (voice_assist), where the tablet has one.
             if (App.get().screen().assist != null) {
                 out.add(row(TOGGLE, "Wake word", "assist_wake_word"));

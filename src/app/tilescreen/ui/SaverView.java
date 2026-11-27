@@ -267,7 +267,7 @@ public final class SaverView extends View {
     // A tap on one does what it says, and the screen stays in standby; a hold on volume down mutes.
 
     private static final int PAUSE = 1, VOLUME_SET = 4, VOLUME_MUTE = 8, VOLUME_STEP = 1024, PLAY = 16384;
-    private static final long MUTE_HOLD_MS = 700, WISH_MS = 6000;
+    private static final long MUTE_HOLD_MS = 1500, WISH_MS = 6000;
     /** plus, minus, play; null where the player has no such key. */
     private RectF[] keys;
     private float keyLeft;

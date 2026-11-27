@@ -460,6 +460,9 @@ public final class App extends Application {
         app.tilescreen.core.Tessera.hasMicrophone = mic;
         app.tilescreen.core.Tessera.echoCancel = mic && Mic.echoCanceller();
         app.tilescreen.core.Voice.uplink = mic ? new Mic() : null;
+        // Tessera's Microphone switch (on to start): off, everything that listens hears silence and the wake word rests.
+        if (mic) made.screenSettings.microphoneToggle(made.device);
+        Mic.switchedOff = mic && !made.screenSettings.microphone();
         // Home Assistant's Assist, push to talk, where there is a microphone (Tessera's voice_assist plugin).
         if (mic) {
             app.tilescreen.core.Assist assist = made.enableVoice();
@@ -475,7 +478,12 @@ public final class App extends Application {
             w.dreaming(dreaming);
             wake = w;
             made.onWakeChanged = new Runnable() {
-                public void run() { w.update(); }
+                public void run() {
+                    boolean mute = !made.screenSettings.microphone();
+                    if (mute != Mic.switchedOff) log("microphone " + (mute ? "off: everything that listens hears silence" : "on"));
+                    Mic.switchedOff = mute;
+                    w.update();
+                }
             };
             w.update();
         }

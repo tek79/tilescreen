@@ -30,6 +30,9 @@ import app.tilescreen.core.Voice;
  * call is. The wake word (WakeListener) gives the microphone up for that time.
  */
 final class Mic implements Voice.Uplink {
+    /** Tessera's Microphone switch is off: every recording gives silence (Input.read). */
+    static volatile boolean switchedOff;
+
     static final int RATE = 16000;
     static final int PART = RATE * 2 * 20 / 1000;   // 20 ms at 16 kHz, one chunk
     static final long ANSWER_MS = 18000;            // the add-on connects the far end first (talk_bridge.ANSWER_SECONDS)
@@ -139,7 +142,14 @@ final class Mic implements Voice.Uplink {
          * 20 ms at 16 kHz into `out` (little-endian bytes); false when the input stopped giving sound. An input at 48 or
          * 44.1 kHz is brought down by linear steps between its samples; for a voice that is clean enough.
          */
+        /** 20 ms; silence while Tessera's Microphone switch is off (it keeps its pace, as ESPHome's muted microphone). */
         boolean read(byte[] out) {
+            boolean ok = readSound(out);
+            if (ok && switchedOff) java.util.Arrays.fill(out, (byte) 0);
+            return ok;
+        }
+
+        private boolean readSound(byte[] out) {
             int n = PART / 2;
             if (rate == RATE) {
                 short[] s = new short[n];

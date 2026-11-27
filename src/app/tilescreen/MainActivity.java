@@ -137,6 +137,7 @@ public final class MainActivity extends Activity implements Screen.Ui, ScreenSet
     protected void onResume() {
         super.onResume();
         resumed = true;
+        app.screen().screenSettings.seen();
         immersive();
         Screen s = app.screen();
         s.setUi(this);

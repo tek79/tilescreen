@@ -51,6 +51,8 @@ final class AlarmPanel {
         List<Mode> out = new ArrayList<Mode>();
         if (lock(t)) {
             out.add(LOCK);
+            // A tile set to lock only never unlocks or opens from this screen (lock_panel.h Guard::LOCK_ONLY).
+            if ("lock_only".equals(t.guard)) return out;
             out.add(UNLOCK);
             if ((f & 1) != 0) out.add(OPEN);
             return out;

@@ -981,6 +981,8 @@ public final class Tessera {
         a.put("appearance_updates", 1.0);
         a.put("tile_keys", 1.0);
         a.put("tile_repeats", 1.0);
+        // A light group's lamps (light_groups.lamps, x.lamps): its card has a lamps key and a page of them.
+        a.put("group_lamps", 1.0);
         a.put("free_pages", 1.0);
         // The board's, not the grid's (firmware 0.53.0+): Tessera may give it another grid and counts that one itself.
         a.put("max_tiles", (double) MAX_TILES);

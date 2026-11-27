@@ -107,7 +107,10 @@ final class Style {
             return ORANGE;
         }
         if (d.equals("cover") || d.equals("person") || d.equals("device_tracker")) return GREEN;
-        if (d.equals("lock")) return "locked".equals(t.state) ? GREEN : RED;
+        if (d.equals("lock")) {
+            String ls = t.state;
+            return "locked".equals(ls) ? GREEN : "locking".equals(ls) || "unlocking".equals(ls) || "opening".equals(ls) ? ORANGE : RED;
+        }
         if (d.equals("alarm_control_panel")) return AlarmPanel.colour(t.state);
         if (d.equals("media_player")) return BLUE;
         if (d.equals("binary_sensor")) return ORANGE;
@@ -145,9 +148,61 @@ final class Style {
     }
 
     /** The line under a tile's name. */
+    /** The screen's clock (Tessera's time format), for the times Style writes. */
+    static volatile boolean clock24 = true;
+
+    /**
+     * When a script, scene or button last ran (tile_words_lvgl.h last_run_text): "Last 14:32" today, "Yesterday 14:32"
+     * ("Yest. 9:15 PM" where room is short), else "Last 13 Sep"; "Never run" without a time. `epoch` in seconds.
+     */
+    static String lastRun(long epoch, boolean compact) {
+        if (epoch <= 0) return "Never run";
+        java.util.Calendar when = java.util.Calendar.getInstance(), now = java.util.Calendar.getInstance();
+        when.setTimeInMillis(epoch * 1000);
+        String clock = new java.text.SimpleDateFormat(clock24 ? "HH:mm" : "h:mm a", java.util.Locale.US).format(when.getTime());
+        if (now.get(java.util.Calendar.YEAR) == when.get(java.util.Calendar.YEAR)) {
+            int d = now.get(java.util.Calendar.DAY_OF_YEAR) - when.get(java.util.Calendar.DAY_OF_YEAR);
+            if (d == 0) return "Last " + clock;
+            if (d == 1) return (compact ? "Yest. " : "Yesterday ") + clock;
+        }
+        return "Last " + when.get(java.util.Calendar.DAY_OF_MONTH) + " "
+                + new java.text.SimpleDateFormat("MMM", java.util.Locale.US).format(when.getTime());
+    }
+
+    /** The line of what runs: Running… while it runs, else when it last ran (the add-on's `last`, seconds). */
+    private static String runLine(Tessera.Tile t, boolean running) {
+        if (running) return "Running…";
+        Double at = Json.dbl(t.extra, "last");
+        return lastRun(at == null ? 0 : at.longValue(), false);
+    }
+
+    /** A clock time "HH:MM" in the screen's format: "6:52 AM" with a 12-hour clock. */
+    static String clockText(String hhmm) {
+        if (hhmm == null || clock24) return hhmm == null ? "" : hhmm;
+        try {
+            String[] p = hhmm.split(":");
+            int h = Integer.parseInt(p[0].trim()), m = Integer.parseInt(p[1].trim());
+            return (h % 12 == 0 ? 12 : h % 12) + ":" + (m < 10 ? "0" : "") + m + (h < 12 ? " AM" : " PM");
+        } catch (Exception e) {
+            return hhmm;
+        }
+    }
+
     static String stateLine(Tessera.Tile t) {
         String d = t.domain(), s = t.state;
         if (unavailable(t)) return words(s);
+        // The sun says when it rises and sets, where the add-on sent the times (runtime_tiles.h).
+        if (d.equals("sun") && Json.str(t.extra, "rise") != null && Json.str(t.extra, "set") != null) {
+            return clockText(Json.str(t.extra, "rise")) + " - " + clockText(Json.str(t.extra, "set"));
+        }
+        if (d.equals("script") || d.equals("scene") || d.equals("button") || d.equals("input_button")) {
+            return runLine(t, "on".equals(s));
+        }
+        // An automation set to run on a tap says what a script's button says, and Off while it is switched off.
+        if (d.equals("automation") && "run".equals(t.tap)) {
+            boolean running = Boolean.TRUE.equals(Json.bool(t.extra, "run"));
+            return running ? "Running…" : "off".equals(s) ? "Off" : runLine(t, false);
+        }
         if (d.equals("light")) {
             Double b = t.number("brightness");
             if ("on".equals(s) && b != null) return Math.round(b / 255.0 * 100) + "%";

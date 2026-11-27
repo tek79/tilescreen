@@ -59,6 +59,8 @@ public final class ScreenSettings {
     public static final String[] FIELDS = {"Sharp", "Full"};
     /** The app's own: which of a tablet's cameras, the front one (looking into the room) to start. */
     private int cameraSide = 0;
+    /** Tessera's Microphone (audio-player.yaml, on by default): off, everything that listens hears silence. */
+    private int microphone = 1;
     public static final String[] SIDES = {"Front", "Back"};
     // This app's own, not Tessera's: Android's screen timeout and screensaver instead of Tessera's standby.
     private int androidSaver = 0;
@@ -90,6 +92,16 @@ public final class ScreenSettings {
     // Standby (core.yaml): last_touch_ms counts the standby time, last_use_ms Back to page 1.
     private long lastTouch = System.currentTimeMillis(), lastUse = System.currentTimeMillis();
     private boolean dimmed, sleepRequested, alertActive, ringActive, callActive, touchDown;
+    /**
+     * A standby by hand (Sleep, the home key held; screen_standby.h, firmware 0.64.0) holds off sensed wakes (motion,
+     * the tablet picked up, Home Assistant's Motion) until none came for a minute: the person who asked for it is still
+     * there, and walking away is motion. Each one it holds starts the minute again; any other wake ends the hold.
+     */
+    private boolean handHold;
+    /** The finger that held the home key is still down: its lift is part of that hold, not a waking touch. */
+    private boolean holdingFinger;
+    private long lastSensed;
+    static final long QUIET_MS = 60000;
 
     public ScreenSettings(EspDevice device, Store store, EspDevice.Logger log, Map<String, Integer> defaults) {
         this.store = store;
@@ -157,6 +169,14 @@ public final class ScreenSettings {
             public void run() { sleepButton(); }
         };
         device.add(sleep);
+        // Motion (firmware 0.64.0): wakes as Wake does, but right after a standby by hand it waits for a quiet minute, so
+        // an automation on a motion sensor doesn't light the screen again as someone walks away from it.
+        EspDevice.Button motion = new EspDevice.Button("motion_wake", "Motion");
+        motion.icon = "mdi:motion-sensor";
+        motion.onPress = new Runnable() {
+            public void run() { sensed("Home Assistant's Motion"); }
+        };
+        device.add(motion);
         publish();
     }
 
@@ -271,6 +291,18 @@ public final class ScreenSettings {
     }
 
     public boolean hasCamera() { return eCameraSensing != null; }
+
+    private EspDevice.Switch eMicrophone;
+
+    /** Tessera's Microphone switch, on a tablet with a microphone: off mutes the wake word, questions, Talk, calls and video. */
+    public void microphoneToggle(EspDevice d) {
+        if (eMicrophone != null) return;
+        eMicrophone = toggle(d, "microphone", "Microphone", "mdi:microphone", "microphone");
+        publish();
+    }
+
+    public boolean hasMicrophoneSwitch() { return eMicrophone != null; }
+    public synchronized boolean microphone() { return microphone != 0; }
     public synchronized boolean cameraSensing() { return cameraSensing != 0; }
     public synchronized boolean cameraWake() { return cameraWake != 0; }
     public synchronized int cameraTimeout() { return cameraTimeout; }
@@ -397,7 +429,7 @@ public final class ScreenSettings {
             Runnable c = onCamera;
             if (c != null) c.run();
         }
-        if (key.equals("assist_wake_word") || key.equals("assist_wake_phrase")) {
+        if (key.equals("assist_wake_word") || key.equals("assist_wake_phrase") || key.equals("microphone")) {
             Runnable w = onWake;
             if (w != null) w.run();
         }
@@ -450,6 +482,7 @@ public final class ScreenSettings {
         else if (key.equals("camera_upside_down")) cameraUpsideDown = flag(value);
         else if (key.equals("camera_field_of_view")) cameraField = clamp(value, 0, FIELDS.length - 1);
         else if (key.equals("camera_side")) cameraSide = clamp(value, 0, SIDES.length - 1);
+        else if (key.equals("microphone")) microphone = flag(value);
         else if (key.equals("android_saver")) {
             androidSaver = flag(value);
             if (androidSaver != 0) { dimmed = false; sleepRequested = false; }
@@ -500,6 +533,7 @@ public final class ScreenSettings {
         m.put("camera_upside_down", (double) cameraUpsideDown);
         m.put("camera_field_of_view", (double) cameraField);
         m.put("camera_side", (double) cameraSide);
+        m.put("microphone", (double) microphone);
         m.put("android_saver", (double) androidSaver);
         m.put("icon_toggles", (double) iconToggles);
         m.put("system_brightness", (double) systemBrightness);
@@ -562,6 +596,7 @@ public final class ScreenSettings {
             eBluetoothScan.set(SCAN_MODES[bs]);
         }
         publishCamera();
+        if (eMicrophone != null) eMicrophone.set(microphone());
         eNightStart.set(nst);
         eNightEnd.set(nen);
         eRotation.set(rot + "°");
@@ -612,6 +647,7 @@ public final class ScreenSettings {
         if (key.equals("camera_upside_down")) return cameraUpsideDown;
         if (key.equals("camera_field_of_view")) return cameraField;
         if (key.equals("camera_side")) return cameraSide;
+        if (key.equals("microphone")) return microphone;
         if (key.equals("android_saver")) return androidSaver;
         if (key.equals("icon_toggles")) return iconToggles;
         if (key.equals("system_brightness")) return systemBrightness;
@@ -667,14 +703,8 @@ public final class ScreenSettings {
     /** The tablet was picked up or moved while dimmed (MainActivity's accelerometer): wake as a touch would. */
     public void lifted() {
         boolean was;
-        synchronized (this) {
-            was = dimmed && liftWake != 0;
-            if (was) wakeLocked();
-        }
-        if (was) {
-            log.log("wake: the tablet was picked up");
-            apply();
-        }
+        synchronized (this) { was = dimmed && liftWake != 0; }
+        if (was) sensed("the tablet picked up");
     }
 
     // ----- standby (core.yaml: dim_display, wake_display, the 1 s interval, Wake and Sleep) -----
@@ -718,6 +748,12 @@ public final class ScreenSettings {
         boolean woke = false;
         synchronized (this) {
             touchDown = down;
+            // The lift of the finger that held the home key: it sent the screen to standby, it doesn't wake it.
+            if (!down && holdingFinger) {
+                holdingFinger = false;
+                return true;
+            }
+            holdingFinger = false;
             lastTouch = lastUse = System.currentTimeMillis();
             // The light comes up as the finger lands, not when it lifts (Tessera 0.4.100: the screensaver goes on the
             // touch down); the rest of that touch acts on nothing (MainActivity swallows it).
@@ -747,6 +783,7 @@ public final class ScreenSettings {
     private void wakeLocked() {
         dimmed = false;
         sleepRequested = false;
+        handHold = false;
         lastTouch = System.currentTimeMillis();
     }
 
@@ -773,22 +810,62 @@ public final class ScreenSettings {
         }
     }
 
-    /** Sleep from Home Assistant: standby now, without the screensaver, also with Auto standby off. */
-    public void sleepButton() {
-        if (androidSaver()) {
-            log.log("sleep from Home Assistant (Android screensaver)");
-            Runnable r = onSleep;
-            if (r != null) r.run();
-            Ui u = ui;
-            if (u != null) u.systemSleep();
-            return;
+    /** Sleep from Home Assistant: a standby by hand. */
+    public void sleepButton() { standbyByHand("Home Assistant"); }
+
+    /**
+     * Standby now, asked for by hand (Sleep in Home Assistant, the home key held): also with Auto standby off, closing an
+     * alert that is up, and with the screensaver as every standby has it (firmware 0.64.0; before, Sleep showed the
+     * dimmed tiles). Sensed wakes wait for a quiet minute after it.
+     */
+    public boolean standbyByHand(String who) {
+        synchronized (this) {
+            // Not over an alert, a doorbell's ring or a call held by the home key (Sleep from Home Assistant closes an
+            // alert first), and not when already in standby.
+            if (who.startsWith("the home key") && (dimmed || alertActive || ringActive || callActive)) return false;
+            handHold = true;
+            holdingFinger = who.startsWith("the home key") && touchDown;
+            lastSensed = System.currentTimeMillis();
         }
-        synchronized (this) { sleepRequested = true; }
-        log.log("sleep from Home Assistant");
         Runnable r = onSleep;
         if (r != null) r.run();
+        if (androidSaver()) {
+            log.log("sleep from " + who + " (Android screensaver)");
+            Ui u = ui;
+            if (u != null) u.systemSleep();
+            return true;
+        }
+        synchronized (this) { sleepRequested = true; }
+        log.log("sleep from " + who);
         dim();
+        return true;
     }
+
+    /**
+     * Someone was sensed (the camera saw motion, the tablet was picked up, Home Assistant pressed Motion): wakes a screen
+     * in standby, as Wake does, unless a standby by hand holds it for a quiet minute; on a lit screen the standby time
+     * starts again. Returns whether it woke the screen.
+     */
+    public boolean sensed(String who) {
+        long now = System.currentTimeMillis();
+        synchronized (this) {
+            if (handHold) {
+                if (now - lastSensed < QUIET_MS) {
+                    if (now - lastSensed > 5000) log.log("wake from " + who + " held: standby by hand, waiting for a quiet minute");
+                    lastSensed = now;
+                    return false;
+                }
+                handHold = false;
+            }
+        }
+        boolean was;
+        synchronized (this) { was = dimmed; }
+        wakeBy(who);
+        return was || androidSaver();
+    }
+
+    /** The app came in front, by a touch on Android's own wake (Use Android screensaver): a hold by hand ends. */
+    public synchronized void seen() { handHold = false; }
 
     /** A ring's view (the doorbell) wakes the screen and holds standby and Back to page 1 off while it shows. */
     public void ringing(boolean up) {
@@ -841,7 +918,7 @@ public final class ScreenSettings {
                 level = night(minuteOfDay()) ? nightBrightness : standbyBrightness;
                 // On the charger with Android brightness, standby is Android's level (auto dims it in the dark).
                 android = sys && charging && !sleepRequested;
-                saver = !sleepRequested && (android || level > 0);
+                saver = android || level > 0;
             } else {
                 level = brightness;
                 saver = false;

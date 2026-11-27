@@ -348,6 +348,7 @@ public final class TileView extends View {
         Style.use(screen.screenSettings.dark());
         c.drawColor(Style.BG);
         layout = screen.tessera.layout();
+        Style.clock24 = layout.clock24;
         boolean shown = screen.tessera.shown() && !layout.pages.isEmpty();
         if (!shown) {
             drawWaiting(c, screen, w, h);
@@ -624,7 +625,9 @@ public final class TileView extends View {
     private void drawBar(Canvas c, final Screen screen, Tessera.Page p, int w, float height) {
         float mid = height / 2f + 0.6f * u;
         float x = 2.2f * u;
-        boolean away = p.excluded || (page != layout.home && screen.screenSettings.homeButton());
+        // The key at the left (runtime_tiles.h draw_header): Back on a detail page, else the home key where the page has
+        // one (its Home control) and Show home button is on, on the Home page too, as Tessera's logo.
+        boolean away = p.excluded || (p.homeControl && screen.screenSettings.homeButton());
         RectF titleHit = new RectF(0, 0, w * 0.45f, height);
         if (away) {
             glyphs.setColor(Style.TEXT);
@@ -634,7 +637,12 @@ public final class TileView extends View {
             back.tap = new Runnable() {
                 public void run() { back(); }
             };
-            back.hold = settingsHold();
+            // Held for half a second: standby now, with the screensaver (firmware 0.64.0), also with Auto standby off.
+            back.hold = new Runnable() {
+                public void run() {
+                    if (!app.screen().screenSettings.standbyByHand("the home key held")) back();
+                }
+            };
             hits.add(back);
             x += 7.5f * u;
         }
@@ -644,6 +652,9 @@ public final class TileView extends View {
         text.setColor(Style.TEXT);
         text.setTextAlign(Paint.Align.LEFT);
         c.drawText(fit(title, w * 0.45f - x), x, mid + 1.5f * u, text);
+        // The title's hold (the settings page) starts after the home key, so the key's own hold (standby) is its own:
+        // hits are found from the last added, and the title's used to lie over the key.
+        titleHit.left = x;
         Hit t = new Hit(titleHit);
         t.hold = settingsHold();
         hits.add(t);
@@ -904,7 +915,9 @@ public final class TileView extends View {
         List<TextCard.Row> textRows = t.entity.equals("screen.text") ? TextCard.rows(t.extra, textError) : null;
         if (t.entity.equals("screen.text") && (textRows == null || textRows.isEmpty() && textError[0] == null)) return;
         boolean on = Style.active(t), dead = Style.unavailable(t);
-        int accent = Style.accent(t);
+        // A lock always wears Home Assistant's colour: green locked, orange moving, red unlocked (lock_panel.h).
+        if (t.domain().equals("lock") && !dead && !"unknown".equals(t.state)) on = true;
+        int accent = lockAsks(t) ? Style.ORANGE : Style.accent(t);
         int fg = pastel != 0 ? Style.DARK_TEXT : Style.TEXT, dim = pastel != 0 ? Style.DARK_DIM : Style.DIM;
         float radius = 2.4f * u;
         if (card) {
@@ -1002,6 +1015,20 @@ public final class TileView extends View {
                 ui.postDelayed(energyFrame, 80);
             }
             return;
+        }
+        // The sun's path (weather_tile_lvgl.h render_sunpath): a wide tile draws the day's arc from rise to set with the
+        // sun where it stands now, and the night's under the horizon.
+        if (t.domain().equals("sun") && "sunpath".equals(t.display) && cell.columns >= 2
+                && Json.str(t.extra, "rise") != null && Json.str(t.extra, "set") != null) {
+            drawSunPath(c, t, new RectF(r.left + pad, r.top + pad * 0.8f, r.right - pad, r.bottom - pad * 0.8f), fs, fg, dim);
+            return;
+        }
+        // A weather tile's forecast (forecast_tile.h, weather_week.h): the days beside the weather now on a wide tile,
+        // the head and the week on a taller one.
+        if (t.domain().equals("weather") && "forecast".equals(t.display) && cell.columns >= 2 && WeatherCard.has(t)
+                && !"unavailable".equals(t.state)) {
+            RectF box = new RectF(r.left + pad, r.top + pad * 0.8f, r.right - pad, r.bottom - pad * 0.8f);
+            if (weather().drawTile(c, t, box, fs, fg, dim, pastel != 0 ? 0x22000000 : Style.LINE, cell.rows >= 2)) return;
         }
         // A calendar (firmware 0.56.0): its view by its room; a tap opens the full screen, a room's keys book it.
         if (t.domain().equals("calendar")) {
@@ -1132,6 +1159,7 @@ public final class TileView extends View {
         // itself, but not over an unavailable entity: that still says so (chosen_subtitle).
         String chosen = chosenLine(t);
         if (chosen != null && !dead) state = chosen;
+        if (lockAsks(t)) state = "Confirm";
         float nameX, nameY, stateY, width;
         if (side) {
             nameX = r.left + pad + ic + pad * 0.6f;
@@ -1148,7 +1176,7 @@ public final class TileView extends View {
         }
         text.setTypeface(regular);
         text.setTextSize(fs * 0.86f);
-        text.setColor(dim);
+        text.setColor(lockAsks(t) ? Style.ORANGE : dim);
         text.setAlpha(alpha);
         if (!state.isEmpty()) c.drawText(fit(state, width), nameX, stateY, text);
         text.setTypeface(medium);
@@ -1187,18 +1215,9 @@ public final class TileView extends View {
         if (choice.startsWith("text:")) return choice.substring(5);
         if (!choice.startsWith("attr:")) return null;
         Double at = Json.dbl(t.extra, "sm");
-        if (at != null && at > 0) return ago((long) (at * 1000));
+        if (at != null && at > 0) return Style.lastRun(at.longValue(), true);
         String line = Json.str(t.extra, "s");
         return line == null ? "" : line;
-    }
-
-    private static String ago(long at) {
-        long s = Math.max(0, (System.currentTimeMillis() - at) / 1000);
-        if (s < 60) return "Just now";
-        if (s < 3600) return s / 60 + " min ago";
-        if (s < 86400) return s / 3600 + " h ago";
-        long days = s / 86400;
-        return days == 1 ? "Yesterday" : days + " days ago";
     }
 
     /** The value and its unit apart, as a Big number shows them: Home Assistant's own words for a duration carry theirs. */
@@ -1345,6 +1364,93 @@ public final class TileView extends View {
     private long bookingUntil;
     /** The calendar whose full screen is open, or -1. */
     private int calendarOpen = -1;
+
+    private static int minutesOf(String hhmm) {
+        try {
+            String[] p = hhmm.split(":");
+            return Integer.parseInt(p[0].trim()) * 60 + Integer.parseInt(p[1].trim());
+        } catch (Exception e) {
+            return -1;
+        }
+    }
+
+    private void drawSunPath(Canvas c, Tessera.Tile t, RectF box, float fs, int fg, int dim) {
+        String rise = Json.str(t.extra, "rise"), set = Json.str(t.extra, "set");
+        text.setTypeface(medium);
+        text.setTextSize(fs);
+        text.setColor(fg);
+        c.drawText(fit(t.name.isEmpty() ? "Sun" : t.name, box.width()), box.left, box.top + fs, text);
+        text.setTypeface(regular);
+        text.setTextSize(fs * 0.85f);
+        text.setColor(dim);
+        c.drawText("Sunrise " + Style.clockText(rise), box.left, box.bottom, text);
+        text.setTextAlign(Paint.Align.RIGHT);
+        c.drawText("Sunset " + Style.clockText(set), box.right, box.bottom, text);
+        text.setTextAlign(Paint.Align.LEFT);
+        float size = fs * 0.9f, glow = size * 1.8f;
+        float horizon = box.bottom - fs * 1.4f, top = box.top + fs * 1.5f;
+        float x0 = box.left + glow / 2, x1 = box.right - glow / 2;
+        java.util.Calendar now = java.util.Calendar.getInstance();
+        int r0 = minutesOf(rise), s0 = minutesOf(set), minute = now.get(java.util.Calendar.HOUR_OF_DAY) * 60 + now.get(java.util.Calendar.MINUTE);
+        boolean day = "above_horizon".equals(t.state);
+        float fraction = 0.5f;
+        if (r0 >= 0 && s0 >= 0) {
+            int span = day ? (s0 - r0 + 1440) % 1440 : (r0 - s0 + 1440) % 1440;
+            if (span == 0) span = 1;
+            int since = day ? (minute - r0 + 1440) % 1440 : (minute - s0 + 1440) % 1440;
+            fraction = Math.max(0, Math.min(1, since / (float) span));
+        }
+        float amplitude = day ? horizon - top : fs * 0.9f;
+        int path = 0xFFB0B6C0, accent = day ? 0xFFFF9800 : 0xFF7986CB, disc = day ? 0xFFFFB300 : 0xFFE0E0E0;
+        Paint ln = new Paint(Paint.ANTI_ALIAS_FLAG);
+        ln.setStyle(Paint.Style.STROKE);
+        ln.setStrokeCap(Paint.Cap.ROUND);
+        ln.setColor(path);
+        ln.setStrokeWidth(Math.max(1, fs * 0.08f));
+        c.drawLine(box.left, horizon, box.right, horizon, ln);
+        android.graphics.Path arc = new android.graphics.Path(), went = new android.graphics.Path(), under = new android.graphics.Path();
+        int seg = 40;
+        float sx = x0, sy = horizon;
+        for (int i = 0; i <= seg; i++) {
+            double a = Math.PI * i / seg;
+            float x = x0 + (x1 - x0) * i / seg, y = (float) (day ? horizon - Math.sin(a) * amplitude : horizon + Math.sin(a) * amplitude);
+            if (i == 0) arc.moveTo(x, y); else arc.lineTo(x, y);
+        }
+        c.drawPath(arc, ln);
+        int filled = (int) (fraction * seg);
+        under.moveTo(x0, horizon);
+        for (int i = 0; i <= filled; i++) {
+            double a = Math.PI * i / seg;
+            float x = x0 + (x1 - x0) * i / seg, y = (float) (day ? horizon - Math.sin(a) * amplitude : horizon + Math.sin(a) * amplitude);
+            if (i == 0) went.moveTo(x, y); else went.lineTo(x, y);
+            under.lineTo(x, y);
+        }
+        double sa = Math.PI * fraction;
+        sx = x0 + (x1 - x0) * fraction;
+        sy = (float) (day ? horizon - Math.sin(sa) * amplitude : horizon + Math.sin(sa) * amplitude);
+        went.lineTo(sx, sy);
+        under.lineTo(sx, sy);
+        under.lineTo(sx, horizon);
+        under.close();
+        if (day) {
+            fill.setColor(0x33FFB300);
+            c.drawPath(under, fill);
+        }
+        ln.setColor(accent);
+        ln.setStrokeWidth(Math.max(2, fs * 0.2f));
+        c.drawPath(went, ln);
+        fill.setColor((disc & 0x00FFFFFF) | 0x4D000000);
+        c.drawCircle(sx, sy, glow / 2, fill);
+        fill.setColor(disc);
+        c.drawCircle(sx, sy, size / 2, fill);
+    }
+
+    private WeatherCard weatherCard;
+
+    private WeatherCard weather() {
+        if (weatherCard == null) weatherCard = new WeatherCard(getContext(), glyphs);
+        return weatherCard;
+    }
 
     private CalendarCard calendar() {
         if (calendarCard == null) calendarCard = new CalendarCard(getContext(), glyphs);
@@ -1925,10 +2031,19 @@ public final class TileView extends View {
     private void drawButton(Canvas c, RectF b, String label, int bg, int fg) {
         fill.setColor(bg);
         c.drawRoundRect(b, b.height() / 2f, b.height() / 2f, fill);
+        if (label != null && label.startsWith("mdi:")) {
+            glyphs.setColor(fg);
+            glyphs.setTextSize(b.height() * 0.5f);
+            glyphs.setTextAlign(Paint.Align.CENTER);
+            c.drawText(Icons.sure(getContext(), label.substring(4)), b.centerX(), b.centerY() + b.height() * 0.18f, glyphs);
+            return;
+        }
         if (label != null) {
             text.setTypeface(medium);
             text.setTextAlign(Paint.Align.CENTER);
             text.setTextSize(b.height() * 0.42f);
+            float lw = text.measureText(label), room = b.width() - b.height() * 0.5f;
+            if (lw > room && lw > 0) text.setTextSize(b.height() * 0.42f * room / lw);
             text.setColor(fg);
             c.drawText(label, b.centerX(), b.centerY() + b.height() * 0.15f, text);
             text.setTextAlign(Paint.Align.LEFT);
@@ -1986,11 +2101,17 @@ public final class TileView extends View {
             glyphs.setTextSize(keyH * 0.42f);
             text.setTypeface(medium);
             text.setTextSize(keyH * 0.34f);
-            float tw = text.measureText(m.label), iw = keyH * 0.5f, total = iw + u * 1.5f + tw;
+            String label = lock && asking(t.entity, m.service, true) ? (m == AlarmPanel.OPEN ? "Really open?" : "Tap again") : m.label;
+            if (!label.equals(m.label)) {
+                fill.setColor(Style.ORANGE);
+                c.drawRoundRect(k, keyH / 2, keyH / 2, fill);
+                fg = 0xFFFFFFFF;
+            }
+            float tw = text.measureText(label), iw = keyH * 0.5f, total = iw + u * 1.5f + tw;
             float sx = k.centerX() - total / 2;
             c.drawText(Icons.sure(getContext(), m.icon), sx + iw / 2, k.centerY() + keyH * 0.15f, glyphs);
             text.setColor(fg);
-            c.drawText(m.label, sx + iw + u * 1.5f, k.centerY() + keyH * 0.12f, text);
+            c.drawText(label, sx + iw + u * 1.5f, k.centerY() + keyH * 0.12f, text);
             Hit hit = new Hit(k);
             hit.tap = new Runnable() {
                 public void run() { choose(t, m); }
@@ -1999,8 +2120,75 @@ public final class TileView extends View {
         }
     }
 
+    // ---- a lock's second tap (lock_panel.h Confirm): one tile or card key waits at a time, five seconds
+    static final long CONFIRM_MS = 5000;
+    private String askEntity = "", askService = "";
+    private boolean askCard;
+    private long askAt;
+
+    /** Whether `service` on `entity` waits for its second tap now (on the card or the tile). */
+    private boolean asking(String entity, String service, boolean card) {
+        return askEntity.equals(entity) && askService.equals(service) && askCard == card
+                && SystemClock.uptimeMillis() - askAt < CONFIRM_MS;
+    }
+
+    /** A first tap arms the wait and says false; a second within the time says true and ends it. */
+    private boolean secondTap(Tessera.Tile t, String service, boolean card) {
+        if (asking(t.entity, service, card)) {
+            askEntity = "";
+            return true;
+        }
+        askEntity = t.entity;
+        askService = service;
+        askCard = card;
+        askAt = SystemClock.uptimeMillis();
+        ui.postDelayed(new Runnable() {
+            public void run() { invalidate(); }
+        }, CONFIRM_MS + 50);
+        invalidate();
+        return false;
+    }
+
+    private static boolean lockMoving(String s) { return "locking".equals(s) || "unlocking".equals(s) || "opening".equals(s); }
+
+    /** A tap on a lock's tile (lock_panel::tap): lock what is not locked, at once; unlock a locked one on a second tap. */
+    private void lockTap(int index, Tessera.Tile t) {
+        String s = t.state;
+        if ("unavailable".equals(s) || lockMoving(s)) return;
+        boolean lockOnly = "lock_only".equals(t.guard);
+        if ("locked".equals(s)) {
+            if (lockOnly) {
+                say("This screen can only lock");
+                return;
+            }
+            if (AlarmPanel.needsCode(t, AlarmPanel.UNLOCK)) {
+                cardTile = index;
+                choose(t, AlarmPanel.UNLOCK);
+                return;
+            }
+            if (secondTap(t, AlarmPanel.UNLOCK.service, false)) call(AlarmPanel.UNLOCK.service, t);
+            return;
+        }
+        if (AlarmPanel.needsCode(t, AlarmPanel.LOCK)) {
+            cardTile = index;
+            choose(t, AlarmPanel.LOCK);
+            return;
+        }
+        call(AlarmPanel.LOCK.service, t);
+    }
+
+    /** A tile's line while it waits for its second tap: "Confirm" in orange (lock_panel_lvgl.h). */
+    private boolean lockAsks(Tessera.Tile t) {
+        return t.domain().equals("lock") && asking(t.entity, AlarmPanel.UNLOCK.service, false);
+    }
+
     /** A mode chosen on the card: straight to Home Assistant, or to the keypad when it asks a code. */
     private void choose(Tessera.Tile t, AlarmPanel.Mode m) {
+        // A lock unlocks or opens on a second tap of its key (Home Assistant's "Really open?"), a code or not.
+        if (AlarmPanel.lock(t) && (m == AlarmPanel.UNLOCK || m == AlarmPanel.OPEN) && cardTile >= 0
+                && !secondTap(t, m.service, true)) {
+            return;
+        }
         if (AlarmPanel.needsCode(t, m)) {
             if (!AlarmPanel.typable(t)) {
                 say("This code has letters: use Home Assistant");
@@ -2230,6 +2418,19 @@ public final class TileView extends View {
             hits.add(fx);
         }
 
+        // A light group's lamps key (group_page.h), left of the sparkles where there are any: a page with every lamp.
+        if (t.domain().equals("light") && Json.arr(t.extra.get("lamps")) != null && cardView.isEmpty()) {
+            float kx = r.right - pad - (effectsOffered(t) ? 26 : 13) * u;
+            glyphs.setColor(Style.DIM);
+            glyphs.setTextSize(6 * u);
+            c.drawText(Icons.sure(getContext(), "lightbulb-group"), kx, r.top + pad + 5 * u, glyphs);
+            Hit lk = new Hit(new RectF(kx - 5 * u, r.top, kx + 5 * u, r.top + pad + 10 * u));
+            lk.tap = new Runnable() {
+                public void run() { cardView = "lamps"; }
+            };
+            hits.add(lk);
+        }
+
         // The library key at the top right of a player whose library opens, as Tessera's card has it.
         if (t.domain().equals("media_player") && Json.integer(t.extra, "lb") != null && cardView.isEmpty()) {
             float kx = r.right - pad - 13 * u;
@@ -2283,6 +2484,10 @@ public final class TileView extends View {
                     public void run() { call("vacuum.locate", t); }
                 });
             }
+            return;
+        }
+        if (t.domain().equals("light") && cardView.equals("lamps")) {
+            drawLamps(c, t, body, fs, accent);
             return;
         }
         if (t.domain().equals("light") && !cardView.isEmpty()) {
@@ -2947,6 +3152,74 @@ public final class TileView extends View {
                 || current.equals("None") ? "—" : current;
     }
 
+    /**
+     * A light group's lamps (group_page.h, light_groups.lamps): a row for each, its name, a key that switches it and,
+     * for one that dims, its brightness as a bar a finger drags. A lamp Home Assistant can't reach is greyed.
+     */
+    private void drawLamps(Canvas c, final Tessera.Tile t, RectF body, float fs, int accent) {
+        List<Object> lamps = Json.arr(t.extra.get("lamps"));
+        if (lamps == null) return;
+        float rowH = fs * 2.8f, y = body.top;
+        float keyW = rowH * 1.2f;
+        for (Object o : lamps) {
+            if (!(o instanceof Map) || y + rowH > body.bottom) continue;
+            @SuppressWarnings("unchecked") final Map<String, Object> m = (Map<String, Object>) o;
+            final String eid = nz(Json.str(m, "e"));
+            boolean on = Json.integer(m, "s") != null, dead = Json.integer(m, "u") != null, dims = Json.integer(m, "d") != null;
+            Integer b = Json.integer(m, "b");
+            // Its key: a lamp's power, lit in the group's colour while on.
+            RectF key = new RectF(body.left, y + fs * 0.3f, body.left + keyW, y + rowH - fs * 0.3f);
+            fill.setColor(dead ? Style.RAISED : on ? withAlpha(accent, 170) : Style.RAISED);
+            c.drawRoundRect(key, key.height() / 2, key.height() / 2, fill);
+            glyphs.setColor(dead ? Style.FAINT : on ? Style.DARK_TEXT : Style.DIM);
+            glyphs.setTextSize(key.height() * 0.55f);
+            glyphs.setTextAlign(Paint.Align.CENTER);
+            c.drawText(Icons.sure(getContext(), on ? "lightbulb-on" : "lightbulb-outline"), key.centerX(), key.centerY() + key.height() * 0.2f, glyphs);
+            if (!dead) {
+                Hit hit = new Hit(key);
+                hit.tap = new Runnable() {
+                    public void run() { lampCall("light.toggle", eid); }
+                };
+                hits.add(hit);
+            }
+            float x = key.right + fs;
+            text.setTypeface(medium);
+            text.setTextSize(fs);
+            text.setColor(dead ? Style.FAINT : Style.TEXT);
+            float nameW = dims ? (body.right - x) * 0.4f : body.right - x;
+            c.drawText(fit(nz(Json.str(m, "n")), nameW), x, y + rowH / 2 + fs * 0.35f, text);
+            if (dims && !dead) {
+                final Slider s = new Slider();
+                s.min = 1;
+                s.max = 100;
+                s.step = 1;
+                s.value = on && b != null ? b : 0;
+                s.key = eid + ":lamp";
+                Held h = held.get(s.key);
+                if (h != null && SystemClock.uptimeMillis() < h.until) s.value = h.value;
+                s.track = new RectF(x + nameW + fs * 0.5f, y + fs * 0.5f, body.right, y + rowH - fs * 0.5f);
+                s.set = new Setter() {
+                    public void set(double v) { lampCall("light.turn_on", eid, "brightness_pct", Style.number((double) Math.round(v))); }
+                };
+                drawSlider(c, s, accent, false, fs);
+                Hit hit = new Hit(s.track);
+                hit.slider = s;
+                hits.add(hit);
+            }
+            y += rowH;
+        }
+        glyphs.setTextAlign(Paint.Align.CENTER);
+    }
+
+    /** An action on one lamp of a group, not on the tile's own entity. */
+    private void lampCall(String service, String entity, String... kv) {
+        Map<String, String> data = new java.util.LinkedHashMap<String, String>();
+        data.put("entity_id", entity);
+        for (int i = 0; i + 1 < kv.length; i += 2) data.put(kv[i], kv[i + 1]);
+        if (!app.screen().perform(service, data, null)) noActions();
+        invalidate();
+    }
+
     private void drawEffects(Canvas c, final Tessera.Tile t, RectF body, float fs, int accent) {
         float rowH = fs * 2.2f, gap = 1.4f * u, y = body.top;
         // The way back: a picker to its page, the page to the card.
@@ -3130,6 +3403,22 @@ public final class TileView extends View {
 
     private void drawCardBody(Canvas c, final Tessera.Tile t, RectF body, float fs, int accent) {
         String d = t.domain(), s = t.state;
+        // The weather card (weather_card_lvgl.h): the weather now, its attributes and the forecast, Daily | Hourly.
+        if (d.equals("weather") && WeatherCard.has(t)) {
+            weather().drawCard(c, t, body, fs, Style.TEXT, Style.DIM, Style.LINE, Style.RAISED, new WeatherCard.Hits() {
+                public void tap(RectF rr, final Runnable run) {
+                    Hit hit = new Hit(new RectF(rr));
+                    hit.tap = new Runnable() {
+                        public void run() {
+                            run.run();
+                            invalidate();
+                        }
+                    };
+                    hits.add(hit);
+                }
+            });
+            return;
+        }
         float rowH = fs * 2.9f;
         float y = body.top;
         // A light's presets on glass much wider than high: a column at the right of its rows, one key under the other.
@@ -3159,18 +3448,30 @@ public final class TileView extends View {
             buttons.add(new String[]{"Close", "cover.close_cover"});
         }
         if (d.equals("lock")) {
+            // Unlock and Open door take a second tap (lock_panel.h); a tile set to lock only offers Lock alone.
             buttons.add(new String[]{"Lock", "lock.lock"});
-            buttons.add(new String[]{"Unlock", "lock.unlock"});
+            if (!"lock_only".equals(t.guard)) {
+                buttons.add(new String[]{asking(t.entity, "lock.unlock", true) ? "Tap again" : "Unlock", "lock.unlock"});
+                Double lf = t.number("supported_features");
+                if (lf != null && (lf.intValue() & 1) != 0)
+                    buttons.add(new String[]{asking(t.entity, "lock.open", true) ? "Really open?" : "Open door", "lock.open"});
+            }
         }
+        if (d.equals("media_player")) y = drawNowPlaying(c, t, body, y, fs, accent);
         if (d.equals("media_player")) {
             // Only the keys the player has (MediaPlayerEntityFeature), as Home Assistant's dialog: a TV may have none.
             int f = t.number("supported_features") == null ? 0 : t.number("supported_features").intValue();
             boolean off = "off".equals(s) || "standby".equals(s);
+            // As icons, as the screen's media card has them: shuffle and repeat at the ends, lit while on.
+            Integer sh = Json.integer(t.extra, "sh");
+            String rp = Json.str(t.extra, "rp");
+            if ((f & 32768) != 0 && sh != null) buttons.add(new String[]{sh == 1 ? "mdi:shuffle-variant" : "mdi:shuffle-disabled", "media_player.shuffle_set", sh == 1 ? "lit" : ""});
+            if (f == 0 || (f & 16) != 0) buttons.add(new String[]{"mdi:skip-previous", "media_player.media_previous_track"});
+            if (f == 0 || (f & (1 | 16384)) != 0) buttons.add(new String[]{"playing".equals(s) ? "mdi:pause" : "mdi:play", "media_player.media_play_pause"});
+            if (f == 0 || (f & 32) != 0) buttons.add(new String[]{"mdi:skip-next", "media_player.media_next_track"});
+            if ((f & 262144) != 0 && rp != null) buttons.add(new String[]{"one".equals(rp) ? "mdi:repeat-once" : "all".equals(rp) ? "mdi:repeat" : "mdi:repeat-off", "media_player.repeat_set", "off".equals(rp) ? "" : "lit"});
             if (f == 0 || (f & (off ? 128 : 256)) != 0)
-                buttons.add(new String[]{off ? "Turn on" : "Turn off", off ? "media_player.turn_on" : "media_player.turn_off"});
-            if (f == 0 || (f & 16) != 0) buttons.add(new String[]{"Previous", "media_player.media_previous_track"});
-            if (f == 0 || (f & (1 | 16384)) != 0) buttons.add(new String[]{"playing".equals(s) ? "Pause" : "Play", "media_player.media_play_pause"});
-            if (f == 0 || (f & 32) != 0) buttons.add(new String[]{"Next", "media_player.media_next_track"});
+                buttons.add(new String[]{"mdi:power", off ? "media_player.turn_on" : "media_player.turn_off"});
         }
         if (d.equals("alarm_control_panel")) {
             buttons.add(new String[]{"Disarm", "alarm_control_panel.alarm_disarm"});
@@ -3191,10 +3492,25 @@ public final class TileView extends View {
             float x = body.left;
             for (final String[] b : buttons) {
                 RectF br = new RectF(x, y, x + bw, y + rowH);
-                drawButton(c, br, b[0], Style.RAISED, Style.TEXT);
+                boolean waits = d.equals("lock") && asking(t.entity, b[1], true);
+                boolean lit = b.length > 2 && "lit".equals(b[2]);
+                drawButton(c, br, b[0], waits ? Style.ORANGE : lit ? withAlpha(accent, 90) : Style.RAISED, waits ? 0xFFFFFFFF : Style.TEXT);
                 Hit hit = new Hit(br);
                 hit.tap = new Runnable() {
-                    public void run() { call(b[1], t); }
+                    public void run() {
+                        if (t.domain().equals("lock") && !b[1].equals("lock.lock") && !secondTap(t, b[1], true)) return;
+                        if (b[1].equals("media_player.shuffle_set")) {
+                            Integer on = Json.integer(t.extra, "sh");
+                            call(b[1], t, "shuffle", on != null && on == 1 ? "false" : "true");
+                            return;
+                        }
+                        if (b[1].equals("media_player.repeat_set")) {
+                            String r = nz(Json.str(t.extra, "rp"));
+                            call(b[1], t, "repeat", r.equals("off") ? "all" : r.equals("all") ? "one" : "off");
+                            return;
+                        }
+                        call(b[1], t);
+                    }
                 };
                 hits.add(hit);
                 x += bw + 2 * u;
@@ -3281,6 +3597,18 @@ public final class TileView extends View {
             }
             List<Object> modes = t.list("hvac_modes");
             if (modes != null) y = chips(c, t, modes, s, "climate.set_hvac_mode", "hvac_mode", body, y, fs);
+            // Fan and Swing, only for a device that has them (climate_card.h), each a row of its own.
+            String[][] rows = {{"Fan", "fan_modes", "fan_mode", "climate.set_fan_mode"}, {"Swing", "swing_modes", "swing_mode", "climate.set_swing_mode"}};
+            for (String[] row : rows) {
+                List<Object> list = t.list(row[1]);
+                if (list == null || list.isEmpty() || y + fs * 2.4f > body.bottom) continue;
+                // The row's name at its left, the choices beside it, so both rows fit under the modes.
+                text.setTypeface(regular);
+                text.setTextSize(fs * 0.9f);
+                text.setColor(Style.DIM);
+                c.drawText(row[0], body.left, y + fs * 1.2f, text);
+                y = chips(c, t, list, t.text(row[2]), row[3], row[2], new RectF(body.left + fs * 4.5f, body.top, body.right, body.bottom), y, fs * 0.75f);
+            }
         }
         if (d.equals("select") || d.equals("input_select")) {
             List<Object> options = t.list("options");
@@ -3385,6 +3713,81 @@ public final class TileView extends View {
                 c.drawText(b.toString(), body.left, y + fs, text);
             }
         }
+    }
+
+    /**
+     * What plays (media_card.h): the title, the artist and the album, and the track's bar with where it is and how long
+     * it is, which a finger drags to another moment where the player can seek (SEEK). Returns where the keys go.
+     */
+    private float drawNowPlaying(Canvas c, final Tessera.Tile t, RectF body, float y, float fs, int accent) {
+        String st = t.state;
+        if (!"playing".equals(st) && !"paused".equals(st) && !"buffering".equals(st)) return y;
+        String title = t.text("media_title");
+        String artist = Json.str(t.extra, "artist"), album = Json.str(t.extra, "album");
+        if (title != null && !title.isEmpty()) {
+            text.setTypeface(medium);
+            text.setTextSize(fs * 1.15f);
+            text.setColor(Style.TEXT);
+            c.drawText(fit(title, body.width()), body.left, y + fs * 1.1f, text);
+            y += fs * 1.5f;
+        }
+        String by = (artist == null ? "" : artist) + (album == null || album.isEmpty() ? "" : (artist == null || artist.isEmpty() ? "" : " · ") + album);
+        if (!by.isEmpty()) {
+            text.setTypeface(regular);
+            text.setTextSize(fs * 0.9f);
+            text.setColor(Style.DIM);
+            c.drawText(fit(by, body.width()), body.left, y + fs * 0.9f, text);
+            y += fs * 1.3f;
+        }
+        Integer dur = Json.integer(t.extra, "dur"), pos = Json.integer(t.extra, "pos"), at = Json.integer(t.extra, "at");
+        if (dur != null && dur > 0 && pos != null) {
+            double now = pos;
+            if ("playing".equals(st) && at != null) now += Math.max(0, System.currentTimeMillis() / 1000.0 - at);
+            now = Math.min(dur, now);
+            int f = t.number("supported_features") == null ? 0 : t.number("supported_features").intValue();
+            final Slider s = new Slider();
+            s.min = 0;
+            s.max = dur;
+            s.step = 1;
+            s.value = now;
+            s.key = t.entity + ":seek";
+            Held h = held.get(s.key);
+            if (h != null && SystemClock.uptimeMillis() < h.until) s.value = h.value;
+            float barY = y + fs * 0.9f;
+            s.track = new RectF(body.left, barY - fs * 0.18f, body.right, barY + fs * 0.18f);
+            fill.setColor(Style.RAISED);
+            c.drawRoundRect(s.track, fs * 0.18f, fs * 0.18f, fill);
+            float frac = (float) (s.value / dur);
+            fill.setColor(accent);
+            c.drawRoundRect(new RectF(s.track.left, s.track.top, s.track.left + s.track.width() * frac, s.track.bottom), fs * 0.18f, fs * 0.18f, fill);
+            if ((f & 2) != 0) c.drawCircle(s.track.left + s.track.width() * frac, barY, fs * 0.42f, fill);
+            text.setTypeface(regular);
+            text.setTextSize(fs * 0.75f);
+            text.setColor(Style.DIM);
+            c.drawText(clockOf((long) s.value), body.left, barY + fs * 1.3f, text);
+            text.setTextAlign(Paint.Align.RIGHT);
+            c.drawText(clockOf(dur), body.right, barY + fs * 1.3f, text);
+            text.setTextAlign(Paint.Align.LEFT);
+            if ((f & 2) != 0) {
+                s.set = new Setter() {
+                    public void set(double v) { call("media_player.media_seek", t, "seek_position", Style.number((double) Math.round(v))); }
+                };
+                Hit hit = new Hit(new RectF(body.left, barY - fs, body.right, barY + fs));
+                hit.slider = s;
+                hits.add(hit);
+            }
+            // The bar moves on by itself while it plays.
+            if ("playing".equals(st)) ui.postDelayed(new Runnable() {
+                public void run() { invalidate(); }
+            }, 1000);
+            y = barY + fs * 1.9f;
+        }
+        return y + fs * 0.4f;
+    }
+
+    private static String clockOf(long seconds) {
+        long h = seconds / 3600, m = seconds / 60 % 60, sec = seconds % 60;
+        return h > 0 ? String.format(Locale.US, "%d:%02d:%02d", h, m, sec) : String.format(Locale.US, "%d:%02d", m, sec);
     }
 
     // ----- a player's library and its favourites (media_library.h) -----
@@ -5164,12 +5567,17 @@ public final class TileView extends View {
             calendarOpen = index;
             return;
         }
+        // An automation (tile_controls.h tap_route): a tap switches it on or off and a hold runs its actions, or the other
+        // way round when the tile is set to run them.
         if (d.equals("automation") && !"detail".equals(t.tap)) {
-            if (hold) cardTile = index; else call("automation.trigger", t);
+            boolean runs = "run".equals(t.tap);
+            call(hold != runs ? "automation.trigger" : "automation.toggle", t);
             return;
         }
+        // A lock (lock_panel.h): held or set to, its card; a tap locks what is not locked at once, and a locked lock
+        // unlocks after a second tap within five seconds, unless the tile may only lock.
         if (d.equals("lock")) {
-            cardTile = index;
+            if (hold || "detail".equals(t.tap)) cardTile = index; else lockTap(index, t);
             return;
         }
         boolean open = hold || "detail".equals(t.tap) || d.equals("vacuum") || d.equals("cover");
