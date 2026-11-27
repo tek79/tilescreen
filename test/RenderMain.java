@@ -330,15 +330,19 @@ public class RenderMain {
                 } else if (p[0].equals("tap") || p[0].equals("hold") || p[0].equals("drag")) {
                     float x = Float.parseFloat(p[1]), y = Float.parseFloat(p[2]);
                     render(view[0], dir.resolve("_scratch.png"), view[0].getWidth(), view[0].getHeight()); // hit regions are built while drawing
-                    view[0].onTouchEvent(new android.view.MotionEvent(0, x, y));
-                    if (p[0].equals("hold")) {
+                    // As MainActivity does: the standby rules hear the finger land and lift (ScreenSettings.touched).
+                    boolean swallow = app.screen.screenSettings.dimmed();
+                    app.screen.screenSettings.touched(true);
+                    if (!swallow) view[0].onTouchEvent(new android.view.MotionEvent(0, x, y));
+                    if (p[0].equals("hold") && !swallow) {
                         java.lang.reflect.Field f = TileView.class.getDeclaredField("longPress");
                         f.setAccessible(true);
                         ((Runnable) f.get(view[0])).run();
                     }
                     float ux = p[0].equals("drag") ? Float.parseFloat(p[3]) : x;
                     if (p[0].equals("drag")) view[0].onTouchEvent(new android.view.MotionEvent(2, ux, y));
-                    view[0].onTouchEvent(new android.view.MotionEvent(1, ux, y));
+                    if (!swallow) view[0].onTouchEvent(new android.view.MotionEvent(1, ux, y));
+                    app.screen.screenSettings.touched(false);
                 } else if (p[0].equals("down") || p[0].equals("move") || p[0].equals("up")) {
                     // A finger that stays: down, then moves, rendered in between, then up.
                     float x = Float.parseFloat(p[1]), y = Float.parseFloat(p[2]);
